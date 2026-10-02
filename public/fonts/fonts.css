@@ -1,0 +1,50 @@
+/* CorelByDre bundled font bridge.
+ *
+ * The editor is offline-first, so the interface never depends on a network
+ * request: the UI stack resolves to locally installed faces, and `local()`
+ * sources let a bundled Inter — if the operator drops one into /fonts — take
+ * over with no code change.
+ *
+ * Document typography is separate: the font catalogue in src/lib/text.ts ships
+ * a curated family list offline and pulls the full 1,700+ Google Fonts library
+ * on demand when a connection is available. Any family can also be embedded
+ * into a document as base64, which is what keeps text editable offline on a
+ * machine that has never seen the font.
+ */
+
+@font-face {
+  font-family: 'Inter var';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: local('Inter Variable'), local('InterVariable'), local('Inter'), local('Segoe UI Variable Text'), local('Helvetica Neue');
+}
+
+@font-face {
+  font-family: 'Inter var';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: local('Inter Variable Italic'), local('Inter Italic'), local('Segoe UI Variable Text Italic');
+}
+
+@font-face {
+  font-family: 'CorelByDre Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: local('JetBrains Mono'), local('SFMono-Regular'), local('Menlo'), local('Consolas'), local('DejaVu Sans Mono');
+}
+
+:root {
+  --ui-font: 'Inter var', 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --ui-mono: 'CorelByDre Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html {
+  font-family: var(--ui-font);
+}
+
+code, kbd, pre, .mono {
+  font-family: var(--ui-mono);
+}

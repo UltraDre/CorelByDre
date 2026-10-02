@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CorelByDre — Offline</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; min-height: 100vh; display: grid; place-items: center;
+        background: radial-gradient(1200px 600px at 50% -10%, #10333a 0%, #0b0f13 60%);
+        color: #e8eef2; font: 400 16px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        text-align: center; padding: 24px;
+      }
+      .card { max-width: 460px; }
+      h1 { font-size: 22px; letter-spacing: -0.01em; margin: 0 0 8px; }
+      p { color: #9fb0bd; margin: 0 0 20px; }
+      .pill { display: inline-flex; gap: 8px; align-items: center; padding: 10px 16px; border-radius: 999px; background: #12a19a22; color: #6fe3da; border: 1px solid #12a19a55; font-size: 13px; }
+      button { margin-top: 20px; padding: 10px 18px; border-radius: 10px; border: 1px solid #2b3b45; background: #16202a; color: #e8eef2; font-size: 14px; cursor: pointer; }
+      button:hover { background: #1c2833; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="pill">● Offline mode</div>
+      <h1>Your documents are still yours</h1>
+      <p>
+        CorelByDre runs entirely on this device, so the editor itself never needs the network.
+        This page only appears when the app shell has not been cached yet — reconnect once and
+        the full studio will be available offline forever after.
+      </p>
+      <button onclick="location.reload()">Try again</button>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,57 @@
+{
+  "id": "corelbydre-graphics-suite",
+  "name": "CorelByDre Graphics Suite",
+  "short_name": "CorelByDre",
+  "description": "Professional vector illustration, page layout and photo editing studio. Works offline, installs like a native app. No AI features — just your hands and your craft.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui", "browser"],
+  "orientation": "any",
+  "background_color": "#101418",
+  "theme_color": "#12a19a",
+  "categories": ["graphics", "productivity", "photo", "design"],
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-256.png", "sizes": "256x256", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-384.png", "sizes": "384x384", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/monochrome-512.png", "sizes": "512x512", "type": "image/png", "purpose": "monochrome" }
+  ],
+  "screenshots": [
+    { "src": "/screenshots/editor-wide.png", "sizes": "1280x720", "type": "image/png", "form_factor": "wide", "label": "The CorelByDre illustration workspace" },
+    { "src": "/screenshots/editor-narrow.png", "sizes": "720x1280", "type": "image/png", "form_factor": "narrow", "label": "CorelByDre on a tablet" }
+  ],
+  "shortcuts": [
+    { "name": "New document", "short_name": "New", "description": "Create a new document", "url": "/?action=new", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Open file", "short_name": "Open", "description": "Open a document from your device", "url": "/?action=open" },
+    { "name": "Recent files", "short_name": "Recents", "description": "Jump back into a recent document", "url": "/?action=recents" }
+  ],
+  "file_handlers": [
+    {
+      "action": "/?action=open",
+      "accept": {
+        "application/json": [".cbd", ".corelbydre"],
+        "image/svg+xml": [".svg"],
+        "application/pdf": [".pdf"],
+        "image/vnd.adobe.illustrator": [".ai"],
+        "image/vnd.corel-draw": [".cdr"],
+        "application/postscript": [".eps", ".ps"],
+        "image/vnd.dxf": [".dxf"],
+        "image/vnd.dwg": [".dwg"],
+        "image/png": [".png"],
+        "image/jpeg": [".jpg", ".jpeg"],
+        "image/webp": [".webp"],
+        "image/heic": [".heic", ".heif"],
+        "image/tiff": [".tif", ".tiff"]
+      }
+    }
+  ],
+  "launch_handler": { "client_mode": "focus-existing" },
+  "edge_side_panel": { "preferred_width": 480 }
+}

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="CorelByDre">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0fa69a"/><stop offset="1" stop-color="#1b6cd6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#g)"/>
+  <path d="M123 348C169 154 322 123 338 236c9 65-25 116-72 137 40-52 47-119 47-119" fill="none" stroke="#fff" stroke-width="37" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#fff"><circle cx="123" cy="348" r="25"/><circle cx="338" cy="236" r="25"/><circle cx="266" cy="440" r="25"/></g>
+</svg>

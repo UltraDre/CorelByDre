@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+out/
+
+# TypeScript incremental state
+*.tsbuildinfo
+
+# AssemblyScript / local build caches
+.wasm-build/
+*.wasm.map
+
+# collaboration relay persistence (run-time state, not source)
+sync-data.json
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# logs and coverage
+*.log
+npm-debug.log*
+coverage/

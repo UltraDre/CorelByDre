@@ -218,7 +218,7 @@ function renderScreenshot(w, h) {
 
 /* ------------------------------------------------------------------ out ---- */
 
-const sizes = [96, 128, 180, 192, 256, 384, 512, 1024]
+const sizes = [72, 96, 128, 180, 192, 256, 384, 512, 1024]
 for (const s of sizes) {
   const name = s === 96 ? 'badge-96.png' : `icon-${s}.png`
   writeFileSync(resolve(outDir, name), renderIcon(s))

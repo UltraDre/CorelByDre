@@ -35,46 +35,127 @@ export interface SyncJob {
   payload: unknown
 }
 
+/**
+ * Persistence must never be able to wedge the editor.
+ *
+ * IndexedDB is not universally available: it is blocked in sandboxed or
+ * partitioned third-party contexts (which is how the app is embedded in
+ * previews), it can be disabled outright, and — worst case — `open()` can fire
+ * neither `success` nor `error` at all, leaving the caller awaiting forever.
+ * Every entry point here is therefore guarded by a capability check and a hard
+ * deadline, so a storage failure always surfaces as a rejected promise that the
+ * caller can fall back from instead of a hang.
+ */
+export const DB_TIMEOUT = 4_000
+const TX_TIMEOUT = 8_000
+
+/** True once we know IndexedDB cannot be used in this context. */
+let storageBroken = false
+
+export function storageAvailable(): boolean {
+  if (storageBroken) return false
+  try {
+    return typeof indexedDB !== 'undefined' && indexedDB !== null
+  } catch {
+    // Merely reading `indexedDB` throws a SecurityError in some embedders.
+    storageBroken = true
+    return false
+  }
+}
+
+function markBroken(reason: string): Error {
+  storageBroken = true
+  const error = new Error(`Local storage unavailable: ${reason}`)
+  error.name = 'StorageUnavailable'
+  return error
+}
+
+/** Reject if `promise` has not settled within `ms`; never leaves a caller hanging. */
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    promise.finally(() => { if (timer !== undefined) clearTimeout(timer) }),
+    new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    }),
+  ])
+}
+
 let dbPromise: Promise<IDBDatabase> | null = null
 
 function openDB(): Promise<IDBDatabase> {
+  if (storageBroken) return Promise.reject(markBroken('IndexedDB is blocked in this context'))
   if (dbPromise) return dbPromise
-  dbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION)
-    request.onupgradeneeded = () => {
-      const db = request.result
-      if (!db.objectStoreNames.contains(STORE_DOCS)) {
-        const store = db.createObjectStore(STORE_DOCS, { keyPath: 'id' })
-        store.createIndex('modifiedAt', 'modifiedAt')
+
+  dbPromise = withTimeout(
+    new Promise<IDBDatabase>((resolve, reject) => {
+      let request: IDBOpenDBRequest
+      try {
+        request = indexedDB.open(DB_NAME, DB_VERSION)
+      } catch (error) {
+        reject(markBroken(error instanceof Error ? error.message : 'open() threw'))
+        return
       }
-      if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META, { keyPath: 'key' })
-      if (!db.objectStoreNames.contains(STORE_QUEUE)) {
-        const queue = db.createObjectStore(STORE_QUEUE, { keyPath: 'id' })
-        queue.createIndex('createdAt', 'createdAt')
+      request.onupgradeneeded = () => {
+        const db = request.result
+        if (!db.objectStoreNames.contains(STORE_DOCS)) {
+          const store = db.createObjectStore(STORE_DOCS, { keyPath: 'id' })
+          store.createIndex('modifiedAt', 'modifiedAt')
+        }
+        if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META, { keyPath: 'key' })
+        if (!db.objectStoreNames.contains(STORE_QUEUE)) {
+          const queue = db.createObjectStore(STORE_QUEUE, { keyPath: 'id' })
+          queue.createIndex('createdAt', 'createdAt')
+        }
       }
-    }
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(markBroken(request.error?.message ?? 'open() failed'))
+      // Another tab holds an older version open: this can otherwise stall forever.
+      request.onblocked = () => reject(markBroken('the database is blocked by another tab'))
+    }),
+    DB_TIMEOUT,
+    'IndexedDB open',
+  ).catch((error) => {
+    // Always drop the memo so a later call gets a fresh attempt.
+    dbPromise = null
+    // A timeout is transient (cold upgrade, a busy tab, a slow disk) and must
+    // not blacklist storage for the rest of the session. A SecurityError, a
+    // failed `open()` or a `blocked` event is a genuine, persistent denial.
+    if (error instanceof Error && /timed out/.test(error.message)) throw error
+    throw error instanceof Error && error.name === 'StorageUnavailable'
+      ? error
+      : markBroken(String((error as Error)?.message ?? error))
   })
+
   return dbPromise
 }
 
 async function tx<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | null): Promise<T | undefined> {
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(store, mode)
-    const objectStore = transaction.objectStore(store)
-    let request: IDBRequest<T> | null = null
-    try {
-      request = fn(objectStore)
-    } catch (error) {
-      reject(error)
-      return
-    }
-    transaction.oncomplete = () => resolve(request ? request.result : undefined)
-    transaction.onerror = () => reject(transaction.error)
-    transaction.onabort = () => reject(transaction.error)
-  })
+  return withTimeout(
+    new Promise<T | undefined>((resolve, reject) => {
+      let transaction: IDBTransaction
+      try {
+        transaction = db.transaction(store, mode)
+      } catch (error) {
+        reject(error)
+        return
+      }
+      const objectStore = transaction.objectStore(store)
+      let request: IDBRequest<T> | null = null
+      try {
+        request = fn(objectStore)
+      } catch (error) {
+        reject(error)
+        return
+      }
+      transaction.oncomplete = () => resolve(request ? request.result : undefined)
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error ?? new Error('transaction aborted'))
+    }),
+    TX_TIMEOUT,
+    `IndexedDB ${mode} on ${store}`,
+  )
 }
 
 /* ------------------------------------------------------------ documents ---- */
@@ -128,13 +209,28 @@ export async function updateSyncJob(job: SyncJob): Promise<void> {
 /**
  * Ask the service worker to run a background sync. Browsers that do not support
  * it fall back to flushing on the next `online` event (see pwa/sync.ts).
+ *
+ * `registration.ready` never settles when no worker activates (blocked, or the
+ * app is embedded where workers are unavailable), so it is raced against a
+ * deadline — autosave queues through here and must not be able to stall.
  */
+const SW_READY_TIMEOUT = 2_500
+
+async function swRegistration(): Promise<ServiceWorkerRegistration | undefined> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return undefined
+  try {
+    return await withTimeout(Promise.resolve(navigator.serviceWorker?.ready), SW_READY_TIMEOUT, 'serviceWorker.ready')
+  } catch {
+    return undefined
+  }
+}
+
 export async function requestBackgroundSync(tag = 'corelbydre-sync'): Promise<boolean> {
   try {
-    const registration = await navigator.serviceWorker?.ready
-    const sync = (registration as ServiceWorkerRegistration & { sync?: { register: (t: string) => Promise<void> } }).sync
+    const registration = await swRegistration()
+    const sync = (registration as (ServiceWorkerRegistration & { sync?: { register: (t: string) => Promise<void> } }) | undefined)?.sync
     if (sync) {
-      await sync.register(tag)
+      await withTimeout(sync.register(tag), SW_READY_TIMEOUT, 'sync.register')
       return true
     }
   } catch {
@@ -145,12 +241,12 @@ export async function requestBackgroundSync(tag = 'corelbydre-sync'): Promise<bo
 
 export async function requestPeriodicSync(tag = 'corelbydre-autosave', minInterval = 60 * 60 * 1000): Promise<boolean> {
   try {
-    const registration = await navigator.serviceWorker?.ready
-    const periodic = (registration as ServiceWorkerRegistration & {
+    const registration = await swRegistration()
+    const periodic = (registration as (ServiceWorkerRegistration & {
       periodicSync?: { register: (t: string, o: { minInterval: number }) => Promise<void> }
-    }).periodicSync
+    }) | undefined)?.periodicSync
     if (periodic) {
-      await periodic.register(tag, { minInterval })
+      await withTimeout(periodic.register(tag, { minInterval }), SW_READY_TIMEOUT, 'periodicSync.register')
       return true
     }
   } catch {
@@ -291,7 +387,7 @@ export async function ensurePermission(handle: FileSystemFileHandle, mode: 'read
 
 export async function estimateStorage(): Promise<{ usage: number; quota: number }> {
   try {
-    const est = await navigator.storage?.estimate?.()
+    const est = await withTimeout(Promise.resolve(navigator.storage?.estimate?.()), 2_000, 'storage.estimate')
     return { usage: est?.usage ?? 0, quota: est?.quota ?? 0 }
   } catch {
     return { usage: 0, quota: 0 }
@@ -300,7 +396,7 @@ export async function estimateStorage(): Promise<{ usage: number; quota: number 
 
 export async function persistStorage(): Promise<boolean> {
   try {
-    return (await navigator.storage?.persist?.()) ?? false
+    return (await withTimeout(Promise.resolve(navigator.storage?.persist?.()), 3_000, 'storage.persist')) ?? false
   } catch {
     return false
   }

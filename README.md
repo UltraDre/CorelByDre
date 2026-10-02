@@ -16,7 +16,7 @@ kernels), never a model. See [Deterministic by construction](#deterministic-by-c
 npm install
 npm run dev          # http://localhost:5173  (LAN + preview friendly: --host 0.0.0.0)
 npm run build        # AssemblyScript kernels → tsc → vite build
-npm test             # vitest: document model, photo operators, exports, store, collaboration
+npm test             # vitest: model, photo, exports, store, collab, import, storage, interaction
 node server/sync-server.mjs --port 8787   # optional collaboration relay (no dependencies)
 ```
 
@@ -138,6 +138,32 @@ The project brief forbids AI/ML/generative features, so there are none — not e
 
 ---
 
+## Startup resilience
+
+The editor paints first and asks for permissions second — no optional platform
+feature is allowed to become a dead end:
+
+* **Local storage can never block first paint.** IndexedDB is blocked in sandboxed
+  or partitioned third-party contexts (iframes, some private modes) and, worse,
+  `open()` can fire neither `success` nor `error` at all. `src/lib/storage.ts`
+  guards every call with a capability check and a hard deadline, so a failure
+  always arrives as a rejection the caller can fall back from. `src/App.tsx` races
+  session restore against a 1.5 s budget and opens the workspace regardless; a
+  restore that lands late is discarded if the user has already started working.
+  A genuine denial is remembered, a transient timeout stays retryable, and the
+  status is surfaced with one toast instead of a spinner.
+* **Service-worker waits are bounded.** `serviceWorker.ready` never settles when no
+  worker activates, which would otherwise wedge autosave queuing, background sync
+  and the notification buttons.
+* **PDF/AI import configures its worker.** pdf.js v4 only defaults
+  `GlobalWorkerOptions.workerSrc` under Node; in a browser the getter throws and
+  every PDF import fails. The worker is emitted as a hashed same-origin asset, so
+  it is cacheable by the service worker and import keeps working offline. A PDF
+  that yields nothing still produces a document with one blank page, never an
+  empty page list.
+* **Network calls are optional and time out.** The Google Fonts catalogue fetch is
+  aborted after 12 s; the curated offline catalogue is always available.
+
 ## Performance notes
 
 * Artwork is rendered through one culled pipeline (`src/engine/render.ts`) with per-object
@@ -158,5 +184,6 @@ src/tools/     tool registry (60 tools, groups, shortcuts)
 src/ui/        shell, canvas, toolbox, property bar, dockers, dialogs, home, collaboration UI
 server/        dependency-free sync relay
 wasm/          AssemblyScript image kernels
-tests/         document model, photo operators, exports, store, collaboration, smoke tests
+tests/         document model, photo operators, exports, store, collaboration,
+               PDF import, storage resilience, strict-canvas + pointer interaction smoke tests
 ```

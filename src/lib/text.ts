@@ -173,7 +173,19 @@ class FontManager {
   /** Fetch the full Google Fonts catalogue (1,700+ families) when online. */
   async fetchGoogleCatalog(): Promise<number> {
     try {
-      const res = await fetch('https://fonts.google.com/metadata/fonts', { headers: { accept: 'application/json' } })
+      // Bounded: the offline catalogue is already usable, so a stalled request
+      // must never leave the font picker in a loading state.
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      const timer = controller ? setTimeout(() => controller.abort(), 12_000) : undefined
+      let res: Response
+      try {
+        res = await fetch('https://fonts.google.com/metadata/fonts', {
+          headers: { accept: 'application/json' },
+          signal: controller?.signal,
+        })
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
       if (!res.ok) return 0
       const text = await res.text()
       const json = JSON.parse(text.replace(/^\)\]\}'\n/, ''))

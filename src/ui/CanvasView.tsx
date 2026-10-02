@@ -66,6 +66,7 @@ import type { BitmapObject, BrushStroke, Document, Fill, Matrix, Page, PathData,
 
 const RULER = 20
 const HANDLE = 7
+let drawWarned = false
 
 type Drag =
   | { kind: 'pan'; start: Vec; pan: Vec }

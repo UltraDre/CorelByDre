@@ -9,7 +9,7 @@ import { renameActor, useCollab } from '../store/collab'
 import { Badge, Button, Col, IconButton, Row, TextField, Toggle } from './widgets'
 import { Icon } from './icons'
 import { objectBounds } from '../engine/render'
-import { ensureNotificationPermission, pushSupported, subscribeToPush, unsubscribeFromPush, type Comment } from '../lib/collab'
+import { ensureNotificationPermission, pushSupported, subscribeToPush, unsubscribeFromPush, vapidPublicKey, type Comment } from '../lib/collab'
 
 function useNow(interval = 20_000): number {
   const [now, setNow] = useState(() => Date.now())
@@ -142,8 +142,10 @@ export function ShareDocker() {
         )}
       </Row>
       <span className="tiny" style={{ opacity: 0.7 }}>
-        Permission: {permission}. Collaboration invites, comment mentions and export completions are pushed through the
-        service worker.
+        Permission: {permission}.{' '}
+        {vapidPublicKey()
+          ? 'Collaboration invites, comment mentions and export completions are pushed through the service worker.'
+          : 'Invites, mentions and export completions show while CorelByDre is open. Add a VAPID key to index.html to enable push when the tab is closed.'}
       </span>
 
       <hr className="rule" />

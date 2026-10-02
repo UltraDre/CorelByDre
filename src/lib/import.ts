@@ -10,6 +10,12 @@ import { uid, pathFromSubpaths, subPath, node, rectNorm, slugify } from './util'
 import { parseHex, rgb } from './color'
 import { createBitmap, createDocument, createGroup, createTextObject, createVector, rectPathData } from '../store/mutations'
 import { parseSvgPath } from './text'
+// pdf.js v4 only defaults `GlobalWorkerOptions.workerSrc` under Node. In a
+// browser the getter throws `No "GlobalWorkerOptions.workerSrc" specified`,
+// which makes every PDF/AI import fail. Vite emits the worker as a hashed
+// same-origin asset, so module-worker creation succeeds and — because the
+// service worker caches same-origin static files — it keeps working offline.
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 export interface ImportResult {
   document: Document
@@ -320,7 +326,13 @@ export async function importPDF(bytes: ArrayBuffer, name = 'Imported PDF'): Prom
   const doc = createDocument(name)
   try {
     const pdfjs: any = await import('pdfjs-dist')
-    // The worker is loaded lazily; without it pdf.js still parses on the main thread.
+    // Point pdf.js at its worker before anything else touches it. Setting it on
+    // the module keeps the real worker path; if a deployment blocks workers the
+    // library falls back to its main-thread "fake worker", which reads the same
+    // `workerSrc` — so this single assignment fixes both paths.
+    if (pdfjs.GlobalWorkerOptions && !pdfjs.GlobalWorkerOptions.workerSrc) {
+      pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+    }
     const loadingTask = pdfjs.getDocument({
       data: bytes,
       disableFontFace: false,
@@ -478,11 +490,29 @@ export async function importPDF(bytes: ArrayBuffer, name = 'Imported PDF'): Prom
       }
       doc.pages.push(page)
     }
+    // Never hand back a document without a page: the editor resolves the active
+    // page with `pages.find(...) ?? pages[0]` and then reads `.layers`/`.size`,
+    // so an empty page list would break every panel. A PDF that yields nothing
+    // (a scan, an encrypted file, zero pages) still gets a blank page.
+    if (!doc.pages.length) {
+      warnings.push('No pages could be extracted from this PDF; a blank page was created instead.')
+      doc.pages.push({
+        ...template,
+        id: uid('page'),
+        name: 'Page 1',
+        layers: [{ ...template.layers[0], id: uid('layer'), objects: [] }],
+      })
+    }
     doc.activePageId = doc.pages[0].id
     if (!stats.objects) warnings.push('This PDF contains no extractable vector content (it may be a scan).')
     if (stats.objects && stats.text === 0) warnings.push('Text in this PDF was converted to outlines on import.')
   } catch (error) {
     warnings.push(`PDF import failed: ${(error as Error).message}`)
+    // Recover the document so the caller always gets something editable.
+    if (!doc.pages.length) {
+      doc.pages.push(createDocument(name).pages[0])
+      doc.activePageId = doc.pages[0].id
+    }
   }
   return { document: doc, warnings, stats }
 }

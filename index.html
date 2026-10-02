@@ -12,6 +12,13 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="CorelByDre" />
     <meta name="mobile-web-app-capable" content="yes" />
+    <!--
+      Server push (collaboration invites, comment mentions, export completion)
+      needs a VAPID public key. Paste the deployment's key below to enable it;
+      left empty, the app stays on in-page notifications and never attempts a
+      subscription. See src/lib/collab.ts → vapidPublicKey().
+    -->
+    <meta name="corelbydre-vapid-key" content="" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />

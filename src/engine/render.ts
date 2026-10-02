@@ -387,17 +387,21 @@ export function processedBitmap(obj: BitmapObject, quality: 'draft' | 'normal' |
       imageData = new ImageData(new Uint8ClampedArray(processed), work.width, work.height)
     }
   }
+  // A painted mask decodes asynchronously. Caching this intermediate result
+  // would freeze the bitmap unmasked forever, because the signature (which only
+  // sees the data URL) never changes when the decode completes.
+  const cacheable = !maskDecodePending(obj.mask, work.width, work.height)
   if (hasStack) {
     const result = runStack(new Uint8ClampedArray(imageData.data), work.width, work.height, obj.effects)
     const out = document.createElement('canvas')
     out.width = result.width
     out.height = result.height
     out.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(result.data), result.width, result.height), 0, 0)
-    objectCache.set(obj, { canvas: out, sig, scale: 1 })
+    if (cacheable) objectCache.set(obj, { canvas: out, sig, scale: 1 })
     return out
   }
   wctx.putImageData(imageData, 0, 0)
-  objectCache.set(obj, { canvas: work, sig, scale: 1 })
+  if (cacheable) objectCache.set(obj, { canvas: work, sig, scale: 1 })
   return work
 }
 
@@ -406,20 +410,79 @@ function maskSignature(mask: MaskData | undefined): string {
   return `${mask.dataUrl ? mask.dataUrl.slice(-24) : 'n'}|${mask.feather}|${mask.contrast}|${mask.invert}|${mask.shapes.map((s) => `${s.kind}${s.rect.x.toFixed(2)},${s.rect.y.toFixed(2)},${s.rect.w.toFixed(2)},${s.rect.h.toFixed(2)}${s.mode}`).join(';')}`
 }
 
-/** Rasterise a mask (shapes + optional painted alpha) into an 8-bit buffer. */
-export function rasteriseMask(mask: MaskData, width: number, height: number): MaskBytes | null {
-  const hasShapes = mask.shapes.length > 0
-  if (!hasShapes && !mask.dataUrl) return null
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!
-  if (mask.dataUrl) {
-    // The painted mask is stored as a grayscale-alpha PNG at bitmap resolution.
-    const image = new Image()
-    image.src = mask.dataUrl
-    return null // async decode handled by the caller via maskCache
+/**
+ * Decoded painted masks, keyed by content + target size.
+ *
+ * A painted mask arrives as a grayscale-alpha PNG data URL, which can only be
+ * read back asynchronously. The first request starts the decode and returns
+ * `null`; when the image lands the bytes are cached and `renderTick` repaints,
+ * exactly like `loadBitmapSource` does for placed images.
+ */
+const maskCache = new Map<string, MaskBytes>()
+const maskPending = new Set<string>()
+
+function paintedMask(dataUrl: string, width: number, height: number): MaskBytes | null {
+  const key = `${dataUrl.length}:${dataUrl.slice(-48)}:${width}x${height}`
+  const cached = maskCache.get(key)
+  if (cached) return cached
+  if (maskPending.has(key)) return null
+  maskPending.add(key)
+
+  const image = new Image()
+  image.onload = () => {
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, width)
+      canvas.height = Math.max(1, height)
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (ctx) {
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+        const out = new Uint8Array(width * height)
+        for (let p = 0; p < out.length; p++) {
+          const i = p * 4
+          // Grayscale-alpha: luminance scaled by the mask's own coverage.
+          const luma = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114
+          out[p] = clamp(Math.round(luma * (data[i + 3] / 255)), 0, 255)
+        }
+        maskCache.set(key, out)
+        renderTick.forEach((fn) => fn())
+      }
+    } catch (error) {
+      console.warn('[render] painted mask could not be decoded', error)
+    } finally {
+      maskPending.delete(key)
+    }
   }
+  image.onerror = () => { maskPending.delete(key) }
+  image.src = dataUrl
+  return null
+}
+
+/** Forget decoded masks (used when the cache must not outlive a document). */
+export function clearMaskCache(): void {
+  maskCache.clear()
+  maskPending.clear()
+}
+
+/**
+ * True while a painted mask is still decoding. Callers must not cache a result
+ * computed in this state, or the mask would never appear once the bytes land.
+ */
+export function maskDecodePending(mask: MaskData | undefined, width: number, height: number): boolean {
+  if (!mask?.dataUrl || width <= 0 || height <= 0) return false
+  const key = `${mask.dataUrl.length}:${mask.dataUrl.slice(-48)}:${width}x${height}`
+  return !maskCache.has(key)
+}
+
+/** Draw the vector selection shapes into an 8-bit buffer. */
+function rasteriseMaskShapes(mask: MaskData, width: number, height: number): MaskBytes | null {
+  if (!mask.shapes.length) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, width)
+  canvas.height = Math.max(1, height)
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return null
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, width, height)
   ctx.fillStyle = '#fff'
@@ -450,7 +513,12 @@ export function rasteriseMask(mask: MaskData, width: number, height: number): Ma
   const data = ctx.getImageData(0, 0, width, height).data
   const out = new Uint8Array(width * height)
   for (let p = 0; p < width * height; p++) out[p] = data[p * 4]
-  let result: MaskBytes = out
+  return out
+}
+
+/** Contrast curve + feather, shared by every mask source. */
+function gradeMask(input: MaskBytes, mask: MaskData, width: number, height: number): MaskBytes {
+  let result: MaskBytes = input
   if (mask.contrast !== 1 && mask.contrast !== 0) {
     const lut = new Uint8Array(256)
     for (let i = 0; i < 256; i++) {
@@ -458,11 +526,34 @@ export function rasteriseMask(mask: MaskData, width: number, height: number): Ma
       lut[i] = clamp(Math.round(v * 255), 0, 255)
     }
     const graded = new Uint8Array(result.length)
-    for (let i = 0; i < graded.length; i++) graded[i] = lut[out[i]]
+    for (let i = 0; i < graded.length; i++) graded[i] = lut[input[i]]
     result = graded
   }
   if (mask.feather > 0) result = ImageKernels.maskFeather(result, width, height, Math.round(mask.feather))
   return result
+}
+
+/** Rasterise a mask (shapes + optional painted alpha) into an 8-bit buffer. */
+export function rasteriseMask(mask: MaskData, width: number, height: number): MaskBytes | null {
+  const hasShapes = mask.shapes.length > 0
+  if (!hasShapes && !mask.dataUrl) return null
+  if (width <= 0 || height <= 0) return null
+
+  // Painted alpha decodes asynchronously; `null` means "not ready yet".
+  const painted = mask.dataUrl ? paintedMask(mask.dataUrl, width, height) : null
+  const shaped = hasShapes ? rasteriseMaskShapes(mask, width, height) : null
+
+  let base: MaskBytes | null
+  if (painted && shaped) {
+    // Either source reveals: the painted brush and the vector shapes combine.
+    const merged = new Uint8Array(painted.length)
+    for (let i = 0; i < merged.length; i++) merged[i] = Math.max(painted[i], shaped[i])
+    base = merged
+  } else {
+    base = painted ?? shaped
+  }
+  if (!base) return null
+  return gradeMask(base, mask, width, height)
 }
 
 /* --------------------------------------------------------------- text ------ */

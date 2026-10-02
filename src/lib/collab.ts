@@ -20,6 +20,8 @@
  *   grammar and presence colours come from a hash of the actor id.
  */
 
+import { withTimeout } from './storage'
+
 /* ============================================================== clocks ==== */
 
 export type ActorID = string
@@ -530,7 +532,7 @@ export async function showNotification(payload: AppNotification): Promise<boolea
     data: { room: payload.room, commentId: payload.commentId, kind: payload.kind },
   }
   try {
-    const registration = await navigator.serviceWorker?.getRegistration()
+    const registration = await swRegistration()
     if (registration) { await registration.showNotification(payload.title, options); return true }
   } catch { /* fall through */ }
   try { new Notification(payload.title, options); return true } catch { return false }
@@ -560,6 +562,36 @@ export function notificationForExport(name: string, format: string): AppNotifica
 
 const VAPID_META = 'corelbydre-vapid-key'
 
+/**
+ * `serviceWorker.ready` never settles when no worker activates (blocked in an
+ * embed, or the app is served without one), which would leave the notification
+ * buttons spinning forever. Everything here is raced against a deadline so the
+ * UI always gets an answer and can fall back to local notifications.
+ */
+const SW_TIMEOUT = 3_000
+
+async function swReady(): Promise<ServiceWorkerRegistration | undefined> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return undefined
+  try {
+    return await withTimeout(Promise.resolve(navigator.serviceWorker.ready), SW_TIMEOUT, 'serviceWorker.ready')
+  } catch {
+    return undefined
+  }
+}
+
+async function swRegistration(): Promise<ServiceWorkerRegistration | undefined> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return undefined
+  try {
+    return await withTimeout(
+      Promise.resolve(navigator.serviceWorker.getRegistration()),
+      SW_TIMEOUT,
+      'serviceWorker.getRegistration',
+    )
+  } catch {
+    return undefined
+  }
+}
+
 /** VAPID public key, if the deployment configured one. */
 export function vapidPublicKey(): string | null {
   if (typeof document === 'undefined') return null
@@ -581,7 +613,8 @@ export async function subscribeToPush(): Promise<PushSubscriptionInfo | null> {
   const permission = await ensureNotificationPermission()
   if (permission !== 'granted') return null
   try {
-    const registration = await navigator.serviceWorker.ready
+    const registration = await swReady()
+    if (!registration) return null
     const existing = await registration.pushManager.getSubscription()
     const subscription = existing ?? (await registration.pushManager.subscribe({
       userVisibleOnly: true,
@@ -594,7 +627,8 @@ export async function subscribeToPush(): Promise<PushSubscriptionInfo | null> {
 
 export async function unsubscribeFromPush(): Promise<boolean> {
   try {
-    const registration = await navigator.serviceWorker.ready
+    const registration = await swReady()
+    if (!registration) return false
     const subscription = await registration.pushManager.getSubscription()
     return subscription ? await subscription.unsubscribe() : true
   } catch { return false }

@@ -157,12 +157,20 @@ export const autosave = debounce(async () => {
   }
 }, 4000)
 
-export async function restoreLastSession(): Promise<boolean> {
+/**
+ * Reopen the autosaved document from the previous session.
+ *
+ * Local storage can be slow or blocked, so the caller paints the shell on a
+ * deadline rather than waiting for this. `shouldApply` is re-checked after every
+ * await: if the user has already started working (new document, opened a file,
+ * dismissed the home screen) the late restore must not clobber their work.
+ */
+export async function restoreLastSession(shouldApply: () => boolean = () => true): Promise<boolean> {
   const last = await loadMeta<string>('lastDocument')
-  if (!last) return false
+  if (!last || !shouldApply()) return false
   const loadDocumentLocal = storage.loadDocumentLocal
   const stored = await loadDocumentLocal(last)
-  if (!stored) return false
+  if (!stored || !shouldApply()) return false
   useStore.getState().replaceDocument(JSON.parse(stored.payload) as Document, { fileHandle: null, markClean: true })
   useStore.getState().setHome(false)
   return true

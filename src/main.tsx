@@ -39,7 +39,7 @@ console.info(`[CorelByDre] ${fonts.list().length} font families available offlin
 /* Service worker: offline shell + background sync for export jobs. */
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch((error) => {
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch((error) => {
       console.warn('[CorelByDre] Service worker registration failed', error)
     })
   })

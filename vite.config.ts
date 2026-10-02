@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
+  // Relative URLs keep the production build working both at the domain root
+  // and under GitHub Pages' /<repository>/ project-site path.
+  base: './',
   plugins: [react()],
   resolve: {
     alias: {

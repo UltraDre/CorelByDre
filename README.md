@@ -24,6 +24,14 @@ node server/sync-server.mjs --port 8787   # optional collaboration relay (no dep
 AssemblyScript. When the WASM build is unavailable the app transparently uses the identical
 JavaScript kernels (`src/lib/wasm.ts`), so nothing breaks.
 
+### GitHub Pages
+
+The repository includes a Pages workflow at `.github/workflows/pages.yml`. In the repository's
+**Settings → Pages**, select **GitHub Actions** as the build and deployment source; pushes to
+`main` then build the production bundle and publish `dist/`. The Vite build uses relative asset
+URLs, so it works from GitHub Pages' `/<repository>/` project-site path as well as at a domain
+root. Do not publish the repository source directory directly: the app must be built first.
+
 ---
 
 ## Feature map

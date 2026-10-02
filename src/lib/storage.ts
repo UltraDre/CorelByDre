@@ -260,7 +260,8 @@ export async function requestPeriodicSync(tag = 'corelbydre-autosave', minInterv
 export const supportsFileSystemAccess = typeof window !== 'undefined' && 'showSaveFilePicker' in window
 
 export const PICKER_TYPES: Record<string, { description: string; accept: Record<string, string[]> }> = {
-  cbd: { description: 'CorelByDre document', accept: { 'application/json': ['.cbd'] } },
+  cdr: { description: 'CorelDRAW document (.cdr)', accept: { 'application/vnd.corel-draw': ['.cdr'], 'application/x-cdr': ['.cdr'] } },
+  cbd: { description: 'CorelByDre document (.cbd)', accept: { 'application/json': ['.cbd'] } },
   svg: { description: 'SVG vector', accept: { 'image/svg+xml': ['.svg'] } },
   pdf: { description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } },
   eps: { description: 'Encapsulated PostScript', accept: { 'application/postscript': ['.eps'] } },
@@ -276,11 +277,16 @@ export async function pickSaveHandle(suggestedName: string, kind: keyof typeof P
   if (!supportsFileSystemAccess) return null
   const ext = kind === 'jpg' ? 'jpg' : kind
   try {
+    const types = ext === 'cdr'
+      ? [PICKER_TYPES.cdr, PICKER_TYPES.cbd]
+      : PICKER_TYPES[ext]
+        ? [PICKER_TYPES[ext]]
+        : undefined
     const handle = await (window as unknown as {
       showSaveFilePicker: (o: unknown) => Promise<FileSystemFileHandle>
     }).showSaveFilePicker({
       suggestedName,
-      types: PICKER_TYPES[ext] ? [PICKER_TYPES[ext]] : undefined,
+      types,
     })
     return handle
   } catch {
@@ -296,8 +302,8 @@ export async function pickOpenHandles(multiple = false): Promise<FileSystemFileH
     }).showOpenFilePicker({
       multiple,
       types: [
-        { description: 'CorelByDre document', accept: { 'application/json': ['.cbd'] } },
-        { description: 'Design files', accept: { 'image/svg+xml': ['.svg'], 'application/pdf': ['.pdf', '.ai'], 'application/postscript': ['.eps'], 'image/vnd.dxf': ['.dxf'], 'image/vnd.corel-draw': ['.cdr'], 'image/vnd.dwg': ['.dwg'] } },
+        { description: 'CorelDRAW & CorelByDre documents (.cdr, .cmx, .cbd)', accept: { 'application/vnd.corel-draw': ['.cdr', '.cmx'], 'application/x-cdr': ['.cdr'], 'application/json': ['.cbd'] } },
+        { description: 'Design files', accept: { 'image/svg+xml': ['.svg'], 'application/pdf': ['.pdf', '.ai'], 'application/postscript': ['.eps'], 'image/vnd.dxf': ['.dxf'], 'image/vnd.corel-draw': ['.cdr', '.cmx'], 'image/vnd.dwg': ['.dwg'] } },
         { description: 'Images', accept: { 'image/png': ['.png'], 'image/jpeg': ['.jpg', '.jpeg'], 'image/webp': ['.webp'], 'image/heic': ['.heic', '.heif'], 'image/tiff': ['.tif', '.tiff'], 'image/avif': ['.avif'], 'image/x-adobe-dng': ['.dng', '.cr2', '.nef', '.arw', '.raf', '.rw2', '.orf'] } },
       ],
     })
@@ -307,8 +313,10 @@ export async function pickOpenHandles(multiple = false): Promise<FileSystemFileH
   }
 }
 
+const DEFAULT_OPEN_ACCEPT = '.cdr,.cmx,.cbd,.svg,.svgz,.pdf,.ai,.eps,.ps,.dxf,.dwg,.png,.jpg,.jpeg,.webp,.avif,.gif,.bmp,.heic,.heif,.tif,.tiff,.dng,.cr2,.nef,.arw,.raf,.rw2,.orf'
+
 /** Fallback picker using a hidden <input type="file">. */
-export function pickFilesFallback(multiple = false, accept?: string): Promise<File[]> {
+export function pickFilesFallback(multiple = false, accept: string = DEFAULT_OPEN_ACCEPT): Promise<File[]> {
   return new Promise((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'

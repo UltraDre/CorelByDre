@@ -81,7 +81,7 @@ export function polygonPath(sides: number, radius: number, sharp = true): PathDa
 export function starPath(points: number, radius: number, innerRadius: number, sharpness = 1): PathData {
   const n = Math.max(3, Math.round(points))
   const nodes: PathNode[] = []
-  const inner = clamp(innerRadius, 0, 1) * radius
+  const inner = innerRadius <= 1 ? clamp(innerRadius, 0, 1) * radius : Math.min(radius, innerRadius)
   for (let i = 0; i < n * 2; i++) {
     const a = -Math.PI / 2 + (Math.PI * i) / n
     const r = i % 2 === 0 ? radius : inner

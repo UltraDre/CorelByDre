@@ -248,7 +248,72 @@ button { cursor: pointer; }
     var(--bg);
   touch-action: none;
 }
-.canvas-wrap canvas.stage { position: absolute; inset: 0; width: 100%; height: 100%; }
+.canvas-wrap canvas.stage { position: absolute; display: block; }
+.canvas-wrap .center-rotate-x {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(18, 161, 154, 0.85);
+  background: rgba(20, 24, 30, 0.72);
+  color: #19c2b8;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 12;
+  user-select: none;
+  transition: transform 0.1s ease, background 0.1s ease, color 0.1s ease;
+}
+.canvas-wrap .center-rotate-x:hover,
+.canvas-wrap .center-rotate-x.active {
+  background: #12a19a;
+  color: #ffffff;
+  border-color: #ffffff;
+  transform: translate(-50%, -50%) scale(1.12);
+}
+.canvas-options-menu {
+  position: absolute;
+  min-width: 218px;
+  max-width: 270px;
+  padding: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.canvas-options-menu .menu-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.hover-tooltip {
+  padding: 4px 8px;
+  background: var(--panel-3, #11151a);
+  color: var(--text, #f3f6fa);
+  border: 1px solid var(--accent, #12a19a);
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
 .canvas-wrap .ruler {
   position: absolute;
   background: var(--panel);

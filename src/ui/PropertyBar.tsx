@@ -44,7 +44,7 @@ export function PropertyBar() {
 
   return (
     <div className="propbar">
-      <div className="prop-group tool-title">
+      <div className="prop-group tool-title" title={`${def.label} — ${def.hint}`} data-tooltip={def.label}>
         <span dangerouslySetInnerHTML={{ __html: def.icon }} style={{ display: 'inline-flex', width: 20, height: 20 }} />
         <span>{def.label}</span>
       </div>

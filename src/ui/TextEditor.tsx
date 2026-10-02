@@ -39,14 +39,22 @@ export function TextEditor({ object }: { object: TextObject }) {
 
   // Keep the overlay anchored while the view pans/zooms.
   const zoom = view.zoom
+  const rulerOffset = view.showRulers ? 20 : 0
   const frame = object.mode === 'paragraph'
     ? object.frame
-    : { x: 0, y: 0, w: Math.max(60, value.length * style.fontSize * 0.55), h: style.fontSize * style.lineHeight * Math.max(1, value.split('\n').length) }
+    : {
+        x: object.frame.x,
+        y: object.frame.y,
+        w: Math.max(object.frame.w || 60, value.length * style.fontSize * 0.55),
+        h: style.fontSize * style.lineHeight * Math.max(1, value.split('\n').length),
+      }
+  const originX = frame.x + object.transform.e
+  const originY = frame.y + object.transform.f
 
   const box: CSSProperties = {
     position: 'absolute',
-    left: (object.mode === 'paragraph' ? frame.x : object.transform.e) * zoom + view.panX,
-    top: (object.mode === 'paragraph' ? frame.y : object.transform.f) * zoom + view.panY,
+    left: rulerOffset + originX * zoom + view.panX,
+    top: rulerOffset + originY * zoom + view.panY,
     width: Math.max(80, frame.w * zoom),
     minHeight: Math.max(22, frame.h * zoom),
     fontFamily: `'${style.fontFamily}', var(--ui-font)`,

@@ -11,6 +11,7 @@ import { printDocument, renderPageForExport, runExport, runWebExport, type Expor
 import { DEFAULT_WEB_EXPORT, defaultWebRenderer, exportWeb, formatBytes, type WebExportOptions, type WebExportResult } from '../lib/webexport'
 
 const FORMATS: { value: ExportOptions['format']; label: string; detail: string }[] = [
+  { value: 'cdr', label: 'CDR (CorelDRAW)', detail: 'CorelDRAW RIFF container (.cdr) with full vector paths, layers and lossless document state.' },
   { value: 'svg', label: 'SVG', detail: 'Editable vector web graphic; text stays as text unless you request curves.' },
   { value: 'pdf', label: 'PDF', detail: 'Full fidelity, print-ready. Options include PDF/X-4 and PDF/A output.' },
   { value: 'ai', label: 'AI (PDF compatible)', detail: 'Illustrator interchange PDF — openable in Illustrator, InDesign and CorelDRAW.' },

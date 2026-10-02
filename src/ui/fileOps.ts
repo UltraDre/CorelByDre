@@ -14,7 +14,7 @@ import {
 } from '../lib/storage'
 import { importFile, type ImportResult } from '../lib/import'
 import { uid } from '../lib/util'
-import { DEFAULT_EXPORT, exportDXF, exportEPS, exportFileName, exportPDF, exportRaster, exportSVG, type ExportOptions } from '../lib/export'
+import { DEFAULT_EXPORT, exportCDR, exportDXF, exportEPS, exportFileName, exportPDF, exportRaster, exportSVG, type ExportOptions } from '../lib/export'
 import { renderPageInto } from '../engine/render'
 import { createDocument, createGroup, PAGE_PRESETS } from '../store/mutations'
 import { debounce, slugify } from '../lib/util'
@@ -105,39 +105,53 @@ function reportImport(result: ImportResult, name: string): void {
   }
 }
 
+export const importIntoDocument = placeImage
+
 /* ------------------------------------------------------------------ save --- */
 
 export function serialiseDocument(doc: Document): string {
   return JSON.stringify({ ...doc, modifiedAt: Date.now() }, null, 2)
 }
 
-export async function saveDocument(saveAs = false): Promise<void> {
+export async function saveDocument(saveAs = false, format: 'cdr' | 'cbd' = 'cdr'): Promise<void> {
   const store = useStore.getState()
   const doc = store.doc
-  const payload = serialiseDocument(doc)
+  const jsonPayload = serialiseDocument(doc)
   try {
     let handle = store.fileHandle
+    const existingIsCbd = Boolean(handle?.name && handle.name.toLowerCase().endsWith('.cbd'))
+    const targetFormat: 'cdr' | 'cbd' = !saveAs && existingIsCbd ? 'cbd' : format
     if (!handle || saveAs) {
       if (supportsFileSystemAccess) {
-        handle = await pickSaveHandle(exportFileName(doc, 'cbd'), 'cbd')
+        handle = await pickSaveHandle(exportFileName(doc, targetFormat), targetFormat)
         if (!handle) return
       }
     }
+    const finalIsCbd = Boolean(handle?.name ? handle.name.toLowerCase().endsWith('.cbd') : targetFormat === 'cbd')
+    const fileBlobOrText = finalIsCbd
+      ? jsonPayload
+      : new Blob([exportCDR(doc) as unknown as BlobPart], { type: 'application/vnd.corel-draw' })
+    const ext = finalIsCbd ? 'cbd' : 'cdr'
+
     if (handle) {
       const allowed = await ensurePermission(handle, 'readwrite')
       if (!allowed) {
         store.toast('error', 'Write permission was denied')
         return
       }
-      await writeToHandle(handle, payload)
+      await writeToHandle(handle, fileBlobOrText)
       store.markSaved(handle)
-      store.toast('success', 'Saved', `${doc.name}.cbd`)
+      store.toast('success', 'Saved', `${doc.name}.${ext}`)
     } else {
-      downloadText(exportFileName(doc, 'cbd'), payload, 'application/json')
+      if (finalIsCbd) {
+        downloadText(jsonPayload, exportFileName(doc, 'cbd'), 'application/json')
+      } else {
+        downloadBlob(fileBlobOrText as Blob, exportFileName(doc, 'cdr'))
+      }
       store.markSaved(null)
-      store.toast('success', 'Downloaded', `${doc.name}.cbd`)
+      store.toast('success', 'Downloaded', `${doc.name}.${ext}`)
     }
-    await saveLocalCopy(doc, payload)
+    await saveLocalCopy(doc, jsonPayload)
     await saveMeta('lastDocument', doc.id)
   } catch (error) {
     store.toast('error', 'Save failed', (error as Error).message)
@@ -207,6 +221,11 @@ export async function runExport(request: ExportRequest): Promise<void> {
 
   try {
     switch (request.format) {
+      case 'cdr': {
+        const bytes = exportCDR(doc, page, options)
+        downloadBlob(new Blob([bytes as unknown as BlobPart], { type: 'application/vnd.corel-draw' }), `${name}.cdr`)
+        break
+      }
       case 'svg': {
         const svg = exportSVG(doc, page, options)
         downloadText(svg, `${name}.svg`, 'image/svg+xml')

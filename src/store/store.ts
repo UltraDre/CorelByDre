@@ -224,13 +224,12 @@ export const useStore = create<AppState>()(
     zoomTo: (zoom, focus) => set((s) => {
       const next = clamp(zoom, 0.02, 64)
       if (!focus) return { view: { ...s.view, zoom: next } }
-      const k = next / s.view.zoom
       return {
         view: {
           ...s.view,
           zoom: next,
-          panX: focus.x - (focus.x - s.view.panX) * k,
-          panY: focus.y - (focus.y - s.view.panY) * k,
+          panX: s.view.panX + focus.x * (s.view.zoom - next),
+          panY: s.view.panY + focus.y * (s.view.zoom - next),
         },
       }
     }),

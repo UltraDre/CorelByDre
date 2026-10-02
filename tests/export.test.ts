@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createDocument, createTextObject, createVector, rectPathData } from '../src/store/mutations'
-import { exportDXF, exportEPS, exportSVG, DEFAULT_EXPORT } from '../src/lib/export'
-import { importSVG, importDXF } from '../src/lib/import'
+import { exportCDR, exportDXF, exportEPS, exportSVG, DEFAULT_EXPORT } from '../src/lib/export'
+import { importCDR, importDXF, importFile, importSVG, inspectCDR } from '../src/lib/import'
 import { rgb } from '../src/lib/color'
 import type { Document } from '../src/types'
 
@@ -100,4 +100,50 @@ describe('import', () => {
     const result = await importSVG('<svg xmlns="http://www.w3.org/2000/svg"><image href="photo.png" width="10" height="10"/></svg>', 'images')
     expect(result.warnings.join(' ')).toMatch(/external image/i)
   })
+
+  it('saves, inspects, opens and imports CorelDRAW (.cdr) files with full fidelity', async () => {
+    const doc = docWithArt()
+    const cdrBytes = exportCDR(doc)
+    expect(String.fromCharCode(cdrBytes[0], cdrBytes[1], cdrBytes[2], cdrBytes[3])).toBe('RIFF')
+    expect(String.fromCharCode(cdrBytes[8], cdrBytes[9], cdrBytes[10], cdrBytes[11])).toBe('CDR ')
+
+    const inspected = await inspectCDR(cdrBytes)
+    expect(inspected.info.format).toBe('riff')
+    expect(inspected.info.chunks.some((c) => c.id === 'vrsn')).toBe(true)
+    expect(inspected.info.chunks.some((c) => c.id === 'CBD ')).toBe(true)
+    expect(inspected.info.chunks.some((c) => c.id === 'SVG ')).toBe(true)
+
+    const imported = await importCDR(cdrBytes, 'RoundtripCDR')
+    expect(imported.warnings).toHaveLength(0)
+    expect(imported.stats.objects).toBe(2)
+    expect(imported.stats.text).toBe(1)
+    expect(imported.document.pages[0].layers[0].objects).toHaveLength(2)
+
+    const cdrFile = new File([cdrBytes as unknown as BlobPart], 'poster.cdr', { type: 'application/vnd.corel-draw' })
+    const fileImported = await importFile(cdrFile)
+    expect(fileImported.warnings).toHaveLength(0)
+    expect(fileImported.stats.objects).toBe(2)
+    expect(fileImported.document.pages[0].layers[0].objects[0].kind).toBe('vector')
+  })
+
+  it('imports legacy RIFF CDR containers with raw vrsn/loda chunks into editable objects', async () => {
+    // Minimal RIFF 'CDR ' container with a 'vrsn' chunk and a 'loda' object chunk
+    const buf = new Uint8Array(32)
+    const view = new DataView(buf.buffer)
+    buf.set([0x52, 0x49, 0x46, 0x46], 0) // 'RIFF'
+    view.setUint32(4, 24, true)
+    buf.set([0x43, 0x44, 0x52, 0x20], 8) // 'CDR '
+    buf.set([0x76, 0x72, 0x73, 0x6e], 12) // 'vrsn'
+    view.setUint32(16, 2, true)
+    view.setUint16(20, 1500, true)
+    buf.set([0x6c, 0x6f, 0x64, 0x61], 22) // 'loda'
+    view.setUint32(26, 2, true)
+    view.setUint16(30, 1, true)
+
+    const result = await importCDR(buf, 'LegacyFile')
+    expect(result.warnings).toHaveLength(0)
+    expect(result.stats.objects).toBeGreaterThanOrEqual(1)
+    expect(result.document.pages[0].layers[0].objects.length).toBeGreaterThanOrEqual(1)
+  })
 })
+

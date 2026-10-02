@@ -38,6 +38,14 @@ export function Col({ children, className = '', gap, style }: {
   )
 }
 
+export function formatToolOrIconName(raw: string): string {
+  return raw
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim()
+}
+
 export function Button({
   children, onClick, variant = 'default', active = false, disabled = false, title, icon, small = false,
 }: {
@@ -50,13 +58,17 @@ export function Button({
   icon?: IconName
   small?: boolean
 }) {
+  const textChild = typeof children === 'string' ? children : Array.isArray(children) ? children.filter((c) => typeof c === 'string').join(' ').trim() : ''
+  const resolvedTitle = title ?? (textChild || (icon ? formatToolOrIconName(icon) : undefined))
   return (
     <button
       type="button"
       className={`btn ${variant !== 'default' ? variant : ''} ${active ? 'active' : ''} ${small ? 'small' : ''}`}
       onClick={onClick}
       disabled={disabled}
-      title={title}
+      title={resolvedTitle}
+      aria-label={resolvedTitle}
+      data-tooltip={resolvedTitle}
     >
       {icon ? <Icon name={icon} size={small ? 13 : 15} /> : null}
       {children}
@@ -65,8 +77,17 @@ export function Button({
 }
 
 export function IconButton({ icon, onClick, title, active, disabled }: { icon: IconName; onClick?: () => void; title?: string; active?: boolean; disabled?: boolean }) {
+  const resolvedTitle = title ?? formatToolOrIconName(icon)
   return (
-    <button type="button" className={`btn icon ${active ? 'active' : ''}`} onClick={onClick} title={title} aria-label={title} disabled={disabled}>
+    <button
+      type="button"
+      className={`btn icon ${active ? 'active' : ''}`}
+      onClick={onClick}
+      title={resolvedTitle}
+      aria-label={resolvedTitle}
+      data-tooltip={resolvedTitle}
+      disabled={disabled}
+    >
       <Icon name={icon} size={15} />
     </button>
   )
@@ -190,7 +211,7 @@ export function Tabs<T extends string>({ value, options, onChange }: { value: T;
   return (
     <div className="tabs">
       {options.map((o) => (
-        <button key={o.value} type="button" className={`tab ${o.value === value ? 'active' : ''}`} onClick={() => onChange(o.value)}>
+        <button key={o.value} type="button" className={`tab ${o.value === value ? 'active' : ''}`} title={o.label} data-tooltip={o.label} onClick={() => onChange(o.value)}>
           {o.label}
         </button>
       ))}
@@ -200,9 +221,10 @@ export function Tabs<T extends string>({ value, options, onChange }: { value: T;
 
 /* --------------------------------------------------------------- popover --- */
 
-export function Popover({ label, icon, children, align = 'left' }: { label: string; icon?: IconName; children: ReactNode; align?: 'left' | 'right' }) {
+export function Popover({ label, icon, title, children, align = 'left' }: { label: string; icon?: IconName; title?: string; children: ReactNode; align?: 'left' | 'right' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const resolvedTitle = title ?? (label || (icon ? formatToolOrIconName(icon) : undefined))
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
@@ -213,7 +235,7 @@ export function Popover({ label, icon, children, align = 'left' }: { label: stri
   }, [open])
   return (
     <div className="menu" ref={ref} style={{ padding: 0 }}>
-      <button type="button" className="btn small" onClick={() => setOpen((o) => !o)}>
+      <button type="button" className="btn small" title={resolvedTitle} aria-label={resolvedTitle} data-tooltip={resolvedTitle} onClick={() => setOpen((o) => !o)}>
         {icon ? <Icon name={icon} size={13} /> : null}
         {label}
         <Icon name="chevron" size={11} />
@@ -239,7 +261,8 @@ function rgbL(r: number, g: number, b: number, a = 1): RGBA {
 }
 
 export function ColorSwatch({ color, size = 24, onClick, title }: { color: RGBA; size?: number; onClick?: () => void; title?: string }) {
-  return <button type="button" className="swatch" title={title} onClick={onClick} style={{ width: size, height: size, background: css(color) }} />
+  const resolvedTitle = title ?? `Color ${hex(color)}`
+  return <button type="button" className="swatch" title={resolvedTitle} aria-label={resolvedTitle} data-tooltip={resolvedTitle} onClick={onClick} style={{ width: size, height: size, background: css(color) }} />
 }
 
 export function ColorPicker({ value, onChange, showAlpha = true, showPalettes = true }: { value: RGBA; onChange: (c: RGBA) => void; showAlpha?: boolean; showPalettes?: boolean }) {
@@ -537,7 +560,7 @@ export function Docker({ title, children, defaultOpen = true }: { id?: DockerID;
   const [expanded, setExpanded] = useState(defaultOpen)
   return (
     <section className="docker">
-      <header className="docker-head" onClick={() => setExpanded((v) => !v)}>
+      <header className="docker-head" title={`${expanded ? 'Collapse' : 'Expand'} ${title}`} data-tooltip={title} onClick={() => setExpanded((v) => !v)}>
         <h3>{title}</h3>
         <span className="chev">{expanded ? '▾' : '▸'}</span>
       </header>
@@ -636,5 +659,81 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
 export function Badge({ children, tone }: { children: ReactNode; tone?: 'ok' | 'warn' | 'danger' }) {
   return <span className={`badge ${tone ?? ''}`}>{children}</span>
 }
+
+/**
+ * Instant floating hover tooltip that displays the name of any hovered tool or icon.
+ * Preserves native `title` and `aria-label` attributes while rendering an immediate visual badge.
+ */
+export function HoverTooltip() {
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null)
+
+  useEffect(() => {
+    const extractLabel = (target: EventTarget | null): { text: string; rect: DOMRect } | null => {
+      if (!(target instanceof Element)) return null
+      const el = target.closest('[data-tooltip], [title], [aria-label], button, .tool, .rail-btn, .sbtn, .swatch, .swatch-pick, svg[data-icon]')
+      if (!el) return null
+      const explicit =
+        el.getAttribute('data-tooltip') ||
+        el.getAttribute('title') ||
+        el.getAttribute('aria-label') ||
+        el.querySelector('svg[data-icon]')?.getAttribute('data-icon')
+      const text = explicit ? explicit.trim() : ''
+      if (!text) return null
+      return { text, rect: el.getBoundingClientRect() }
+    }
+
+    const onOver = (e: Event) => {
+      const me = e as MouseEvent
+      const info = extractLabel(me.target)
+      if (!info) {
+        setTip(null)
+        return
+      }
+      const x = clamp(
+        info.rect.width > 0 ? info.rect.left + info.rect.width / 2 : (me.clientX || 40),
+        12,
+        (typeof window !== 'undefined' ? window.innerWidth : 1200) - 12,
+      )
+      const y = clamp(
+        info.rect.height > 0 ? info.rect.bottom + 6 : (me.clientY || 40) + 16,
+        12,
+        (typeof window !== 'undefined' ? window.innerHeight : 800) - 28,
+      )
+      setTip({ text: info.text, x, y })
+    }
+
+    const onLeave = () => setTip(null)
+
+    document.addEventListener('mouseover', onOver, true)
+    document.addEventListener('pointerover', onOver, true)
+    document.addEventListener('pointerdown', onLeave, true)
+    window.addEventListener('blur', onLeave)
+    return () => {
+      document.removeEventListener('mouseover', onOver, true)
+      document.removeEventListener('pointerover', onOver, true)
+      document.removeEventListener('pointerdown', onLeave, true)
+      window.removeEventListener('blur', onLeave)
+    }
+  }, [])
+
+  if (!tip) return null
+  return (
+    <div
+      className="hover-tooltip"
+      role="tooltip"
+      style={{
+        position: 'fixed',
+        left: tip.x,
+        top: tip.y,
+        transform: 'translateX(-50%)',
+        pointerEvents: 'none',
+        zIndex: 9999,
+      }}
+    >
+      {tip.text}
+    </div>
+  )
+}
+
 
 export { splineAt as curveInterpolate }

@@ -14,17 +14,20 @@ const RUNTIME_CACHE = `corelbydre-runtime-${VERSION}`
 const FONT_CACHE = `corelbydre-fonts-${VERSION}`
 const IMAGE_CACHE = `corelbydre-media-${VERSION}`
 const KNOWN_CACHES = [SHELL_CACHE, RUNTIME_CACHE, FONT_CACHE, IMAGE_CACHE]
+const scopedUrl = (path) => new URL(path.replace(/^\/+/, ''), self.registration.scope).href
 
+// Keep every cache entry inside the service worker's scope. This works for
+// both root-hosted installs and GitHub Pages project sites (/<repo>/).
 const SHELL_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.webmanifest',
-  '/offline.html',
-  '/wasm/kernels.wasm',
-  '/icons/icon.svg',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
-  '/fonts/fonts.css',
+  '',
+  'index.html',
+  'manifest.webmanifest',
+  'offline.html',
+  'wasm/kernels.wasm',
+  'icons/icon.svg',
+  'icons/icon-192.png',
+  'icons/icon-512.png',
+  'fonts/fonts.css',
 ]
 
 const SYNC_TAG = 'corelbydre-sync'
@@ -36,8 +39,8 @@ self.addEventListener('install', (event) => {
       const cache = await caches.open(SHELL_CACHE)
       // Individually so one 404 never aborts the whole install.
       await Promise.all(
-        SHELL_ASSETS.map((url) =>
-          cache.add(new Request(url, { cache: 'reload' })).catch(() => undefined),
+        SHELL_ASSETS.map((path) =>
+          cache.add(new Request(scopedUrl(path), { cache: 'reload' })).catch(() => undefined),
         ),
       )
       await self.skipWaiting()
@@ -116,14 +119,14 @@ self.addEventListener('fetch', (event) => {
           if (preload) return preload
           const fresh = await fetch(request)
           const cache = await caches.open(SHELL_CACHE)
-          cache.put('/index.html', fresh.clone())
+          cache.put(scopedUrl('index.html'), fresh.clone())
           return fresh
         } catch {
           const cache = await caches.open(SHELL_CACHE)
           return (
-            (await cache.match('/index.html')) ||
-            (await cache.match('/')) ||
-            (await caches.match('/offline.html')) ||
+            (await cache.match(scopedUrl('index.html'))) ||
+            (await cache.match(scopedUrl(''))) ||
+            (await caches.match(scopedUrl('offline.html'))) ||
             new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } })
           )
         }
@@ -158,7 +161,7 @@ self.addEventListener('fetch', (event) => {
       if (response) return response
       if (request.destination === 'document' || request.headers.get('accept')?.includes('text/html')) {
         const shell = await caches.open(SHELL_CACHE)
-        return (await shell.match('/index.html')) || (await caches.match('/offline.html')) || Response.error()
+        return (await shell.match(scopedUrl('index.html'))) || (await caches.match(scopedUrl('offline.html'))) || Response.error()
       }
       return new Response('', { status: 504, statusText: 'Offline and not cached' })
     })(),
@@ -191,13 +194,13 @@ self.addEventListener('push', (event) => {
   const title = payload.title || 'CorelByDre'
   const options = {
     body: payload.body || 'You have a new notification.',
-    icon: payload.icon || '/icons/icon-192.png',
-    badge: '/icons/badge-96.png',
+    icon: payload.icon || scopedUrl('icons/icon-192.png'),
+    badge: scopedUrl('icons/badge-96.png'),
     tag: payload.tag || 'corelbydre-general',
     renotify: Boolean(payload.renotify),
     requireInteraction: false,
     silent: false,
-    data: { url: payload.url || '/', kind: payload.kind || 'general', ...(payload.data || {}) },
+    data: { url: payload.url || scopedUrl(''), kind: payload.kind || 'general', ...(payload.data || {}) },
     actions: payload.actions || [],
   }
   event.waitUntil(self.registration.showNotification(title, options))
@@ -205,7 +208,7 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const target = event.notification.data?.url || '/'
+  const target = event.notification.data?.url || scopedUrl('')
   const action = event.action
   event.waitUntil(
     (async () => {

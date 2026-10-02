@@ -77,7 +77,7 @@ export function loadKernels(): Promise<KernelStatus> {
   loadPromise = (async (): Promise<KernelStatus> => {
     setStatus('loading')
     try {
-      const res = await fetch('/wasm/kernels.wasm')
+      const res = await fetch(`${import.meta.env.BASE_URL}wasm/kernels.wasm`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const bytes = await res.arrayBuffer()
       const { instance } = await WebAssembly.instantiate(bytes, {

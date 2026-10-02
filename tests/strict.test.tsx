@@ -7,7 +7,7 @@
  * bugs that only appear in a browser surface here.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { act } from 'react'
+import { StrictMode, act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import App from '../src/App'
 import { useStore } from '../src/store/store'
@@ -313,6 +313,55 @@ describe('strict canvas: engine', () => {
 })
 
 describe('strict canvas: UI', () => {
+  /* Regression: the stage used to stay blank. The render loop is scheduled from
+   * a dependency-free callback, and React 18 StrictMode mounts → tears down →
+   * re-mounts every effect in development. The teardown cancelled the pending
+   * animation frame but left its (now stale) id in the guard, so every later
+   * scheduleDraw() bailed out and the canvas never painted at all — a black
+   * rectangle in the dev server, which is exactly what a preview serves. */
+  it('paints the stage through a StrictMode mount and a resize', async () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    let root: Root | null = null
+    const settle = () => new Promise((r) => setTimeout(r, 80))
+
+    await act(async () => {
+      root = createRoot(container)
+      root!.render(<StrictMode><App /></StrictMode>)
+    })
+    await flush()
+    await act(async () => { useStore.getState().setHome(false) })
+    await flush()
+    await act(async () => { await settle() })
+
+    const stage = container.querySelector('canvas.stage.artwork') as HTMLCanvasElement | null
+    expect(stage).not.toBeNull()
+    // The bitmap starts at the untouched default (300×150) and the size state at
+    // 900×600; the stubbed wrapper measures 1200×800 with 20pt rulers, so only a
+    // frame that actually ran can land on 1180×780.
+    expect(`${stage!.width}x${stage!.height}`).toBe('1180x780')
+
+    // A resize must resize the backing bitmap, not just the CSS box.
+    const originalRect = HTMLElement.prototype.getBoundingClientRect
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 600, width: 800, height: 600, toJSON: () => ({}) } as DOMRect
+    }
+    try {
+      await act(async () => { window.dispatchEvent(new Event('resize')) })
+      await flush()
+      await act(async () => { await settle() })
+      expect(`${stage!.width}x${stage!.height}`).toBe('780x580')
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalRect
+    }
+
+    await act(async () => { root?.unmount() })
+    container.remove()
+
+    if (thrown.length) console.debug('STRICT THROWN:\n' + thrown.slice(0, 40).join('\n'))
+    expect(thrown).toEqual([])
+  }, 120000)
+
   it('mounts, opens the workspace and cycles every tool', async () => {
     const container = document.createElement('div')
     document.body.appendChild(container)

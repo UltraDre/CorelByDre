@@ -115,6 +115,13 @@ export function CanvasView() {
   const cursorRef = useRef<Vec>({ x: 0, y: 0 })
   const snapRef = useRef<{ v: number[]; h: number[]; points: Vec[] }>({ v: [], h: [], points: [] })
   const frameRef = useRef(0)
+  /**
+   * Always the newest `draw`. The render loop is scheduled from a callback with
+   * no dependencies, so it must look the painter up at frame time — otherwise it
+   * would keep calling the first render's closure and never pick up a new
+   * canvas size.
+   */
+  const drawRef = useRef<() => void>(() => undefined)
   const lastPresenceRef = useRef(0)
   const rotateModeRef = useRef(false)
   rotateModeRef.current = rotateMode
@@ -171,7 +178,7 @@ export function CanvasView() {
     if (frameRef.current) return
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = 0
-      draw()
+      drawRef.current()
     })
   }, [])
 
@@ -548,9 +555,25 @@ export function CanvasView() {
     }
   }, [size.w, size.h])
 
+  // Keep the scheduled frame pointed at the painter from this render, so a
+  // pending frame draws at the current canvas size instead of an earlier one.
+  drawRef.current = draw
+
+  // A resize changes the measured size (and therefore the backing bitmap), so
+  // it has to schedule a repaint of its own — the state effects below do not
+  // re-run when only the container changed.
+  useEffect(() => { scheduleDraw() }, [size.w, size.h, scheduleDraw])
   useEffect(() => { scheduleDraw() }, [doc, view, selection, nodeSelection, tool, previewEffects, peers, editingTextId, rotateMode, scheduleDraw])
   useEffect(() => onBitmapReady(scheduleDraw), [scheduleDraw])
-  useEffect(() => () => { if (frameRef.current) cancelAnimationFrame(frameRef.current) }, [])
+  useEffect(() => () => {
+    // Cancelling must also clear the guard: React 18 StrictMode mounts, tears
+    // down and re-mounts every effect in development, and a cancelled-but-stale
+    // id would make scheduleDraw() bail out forever — leaving the stage blank.
+    if (frameRef.current) {
+      cancelAnimationFrame(frameRef.current)
+      frameRef.current = 0
+    }
+  }, [])
 
   /* ---------------------------------------------------------------- input -- */
 

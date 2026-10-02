@@ -159,4 +159,152 @@ describe('canvas interaction', () => {
     if (z === 1) console.debug('ZOOM TOOL DID NOT ZOOM')
     expect(z).not.toBe(1)
   }, 30000)
+
+  it('calibrates direct click selection on objects and rotates via the center x handle', async () => {
+    await act(async () => {
+      useStore.getState().replaceDocument(createDocument('T', { id: 'a4', label: 'A4', w: 210, h: 297, unit: 'mm' }), { markClean: true })
+      useStore.getState().setView({ zoom: 1, panX: 0, panY: 0, showRulers: false })
+      useStore.getState().setTool('rectangle')
+    })
+    await flush()
+    // Draw a rectangle from (100, 100) to (300, 220); center is (200, 160).
+    await act(async () => { drag(100, 100, 300, 220) })
+    await flush()
+    expect(objectCount()).toBe(1)
+
+    await act(async () => {
+      useStore.getState().setTool('pick')
+      useStore.getState().clearSelection()
+    })
+    await flush()
+    expect(useStore.getState().selection).toHaveLength(0)
+
+    // Clicking outside the object at (50, 50) does not select it.
+    await act(async () => {
+      pointer('pointerdown', 50, 50)
+      pointer('pointerup', 50, 50)
+    })
+    await flush()
+    expect(useStore.getState().selection).toHaveLength(0)
+
+    // Clicking directly on the object at (140, 140) selects it immediately.
+    await act(async () => {
+      pointer('pointerdown', 140, 140)
+      pointer('pointerup', 140, 140)
+    })
+    await flush()
+    expect(useStore.getState().selection).toHaveLength(1)
+
+    // The small 'x' rotation button is rendered at the center of the selected object.
+    const centerXBtn = document.querySelector('[data-testid="center-rotate-x"]') as HTMLButtonElement | null
+    expect(centerXBtn).toBeTruthy()
+    expect(centerXBtn?.textContent?.trim()).toBe('x')
+
+    // Clicking the center 'x' enables rotation mode.
+    await act(async () => {
+      centerXBtn!.click()
+    })
+    await flush()
+    expect(centerXBtn?.classList.contains('active')).toBe(true)
+
+    // Dragging on the selected object or handle now rotates it.
+    await act(async () => {
+      drag(300, 160, 200, 260)
+    })
+    await flush()
+    const obj = useStore.getState().doc.pages[0].layers[0].objects[0]
+    expect(Math.abs(obj.transform.b) + Math.abs(obj.transform.c)).toBeGreaterThan(0.05)
+  }, 30000)
+
+  it('opens the options menu on hold-left-click + right-click tap and on 2-finger tap', async () => {
+    await act(async () => {
+      useStore.getState().setTool('pick')
+    })
+    await flush()
+
+    // 1. Hold left click (button 0) + right click tap (button 2, buttons 3).
+    await act(async () => {
+      pointer('pointerdown', 180, 180, { button: 0, buttons: 1 })
+      pointer('pointerdown', 180, 180, { button: 2, buttons: 3 })
+      pointer('pointerup', 180, 180, { button: 0, buttons: 0 })
+    })
+    await flush()
+    let menu = document.querySelector('.canvas-options-menu[role="menu"]')
+    expect(menu).toBeTruthy()
+
+    // Close menu via Escape
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    await flush()
+    expect(document.querySelector('.canvas-options-menu[role="menu"]')).toBeNull()
+
+    // 2. Two-finger tap via touch pointer events
+    await act(async () => {
+      pointer('pointerdown', 200, 200, { pointerId: 10, pointerType: 'touch' })
+      pointer('pointerdown', 240, 200, { pointerId: 11, pointerType: 'touch' })
+      pointer('pointerup', 200, 200, { pointerId: 10, pointerType: 'touch' })
+      pointer('pointerup', 240, 200, { pointerId: 11, pointerType: 'touch' })
+    })
+    await flush()
+    menu = document.querySelector('.canvas-options-menu[role="menu"]')
+    expect(menu).toBeTruthy()
+  }, 30000)
+
+  it('zooms the page in and out on 2-finger drag', async () => {
+    await act(async () => {
+      useStore.getState().setView({ zoom: 1, panX: 0, panY: 0 })
+    })
+    await flush()
+    expect(useStore.getState().view.zoom).toBe(1)
+
+    // Two-finger spread / drag to zoom in
+    await act(async () => {
+      pointer('pointerdown', 250, 250, { pointerId: 21, pointerType: 'touch' })
+      pointer('pointerdown', 350, 250, { pointerId: 22, pointerType: 'touch' })
+      pointer('pointermove', 200, 250, { pointerId: 21, pointerType: 'touch' })
+      pointer('pointermove', 400, 250, { pointerId: 22, pointerType: 'touch' })
+      pointer('pointerup', 200, 250, { pointerId: 21, pointerType: 'touch' })
+      pointer('pointerup', 400, 250, { pointerId: 22, pointerType: 'touch' })
+    })
+    await flush()
+    const zoomedIn = useStore.getState().view.zoom
+    expect(zoomedIn).toBeGreaterThan(1)
+
+    // Parallel two-finger drag downward to zoom out
+    await act(async () => {
+      pointer('pointerdown', 250, 200, { pointerId: 31, pointerType: 'touch' })
+      pointer('pointerdown', 310, 200, { pointerId: 32, pointerType: 'touch' })
+      pointer('pointermove', 250, 280, { pointerId: 31, pointerType: 'touch' })
+      pointer('pointermove', 310, 280, { pointerId: 32, pointerType: 'touch' })
+      pointer('pointerup', 250, 280, { pointerId: 31, pointerType: 'touch' })
+      pointer('pointerup', 310, 280, { pointerId: 32, pointerType: 'touch' })
+    })
+    await flush()
+    const zoomedOut = useStore.getState().view.zoom
+    expect(zoomedOut).toBeLessThan(zoomedIn)
+  }, 30000)
+
+  it('shows the tool or icon name when hovering on any tool or icon', async () => {
+    const toolButtons = Array.from(document.querySelectorAll('.toolbox .tool'))
+    expect(toolButtons.length).toBeGreaterThan(5)
+    for (const btn of toolButtons) {
+      expect(btn.getAttribute('title') || btn.getAttribute('data-tooltip')).toBeTruthy()
+    }
+
+    const railButtons = Array.from(document.querySelectorAll('.dockers-rail button'))
+    expect(railButtons.length).toBeGreaterThan(5)
+    for (const btn of railButtons) {
+      expect(btn.getAttribute('title') || btn.getAttribute('data-tooltip')).toBeTruthy()
+    }
+
+    const firstTool = toolButtons[0] as HTMLElement
+    await act(async () => {
+      firstTool.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: 20, clientY: 120 }))
+    })
+    await flush()
+    const tooltip = document.querySelector('.hover-tooltip[role="tooltip"]')
+    expect(tooltip).toBeTruthy()
+    expect(tooltip?.textContent?.length).toBeGreaterThan(0)
+  }, 30000)
 })

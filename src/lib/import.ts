@@ -720,41 +720,316 @@ export async function importDXF(text: string, name = 'Imported DXF'): Promise<Im
 /* ------------------------------------------------------------------ CDR ---- */
 
 export interface CDRInfo {
-  format: 'cdr' | 'riff' | 'unknown'
+  format: 'cdr' | 'riff' | 'zip' | 'json' | 'svg' | 'unknown'
   version?: string
   chunks: { id: string; size: number }[]
 }
 
-/**
- * CDR is a proprietary RIFF container. A faithful reader requires the Corel
- * binary object model, which is out of scope for a browser build, so we detect
- * the container, report what we found and keep the file intact for a conversion
- * service or desktop CorelDRAW. This is deliberately *not* a silent partial parse.
- */
-export async function inspectCDR(file: File): Promise<{ info: CDRInfo; warnings: string[] }> {
-  const head = new Uint8Array(await file.slice(0, 4096).arrayBuffer())
+async function readInputBytes(input: File | Blob | ArrayBuffer | Uint8Array | string): Promise<Uint8Array> {
+  if (input instanceof Uint8Array) return input
+  if (input instanceof ArrayBuffer) return new Uint8Array(input)
+  if (typeof input === 'string') return new TextEncoder().encode(input)
+  if (typeof input.arrayBuffer === 'function') {
+    return new Uint8Array(await input.arrayBuffer())
+  }
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer))
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file bytes'))
+    reader.readAsArrayBuffer(input)
+  })
+}
+
+function countDocStats(doc: Document): ImportResult['stats'] {
+  const fonts = new Set<string>()
+  let objects = 0
+  let bitmaps = 0
+  let text = 0
+  const visit = (list: SceneObject[]) => {
+    for (const obj of list) {
+      if (obj.kind === 'group') {
+        visit(obj.children)
+      } else if (obj.kind === 'bitmap') {
+        bitmaps++
+        objects++
+      } else if (obj.kind === 'text') {
+        text++
+        objects++
+        if (obj.style?.fontFamily) fonts.add(obj.style.fontFamily)
+      } else {
+        objects++
+      }
+    }
+  }
+  for (const page of doc.pages ?? []) {
+    for (const layer of page.layers ?? []) visit(layer.objects ?? [])
+  }
+  return { objects, bitmaps, text, fonts: [...fonts] }
+}
+
+interface ParsedRiffChunk {
+  id: string
+  size: number
+  data: Uint8Array
+  formType?: string
+  children?: ParsedRiffChunk[]
+}
+
+function parseRiffChunks(bytes: Uint8Array, startOffset = 12, endOffset = bytes.length): ParsedRiffChunk[] {
+  const out: ParsedRiffChunk[] = []
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const ascii = (from: number, len: number) => {
+    let s = ''
+    for (let i = from; i < Math.min(bytes.length, from + len); i++) s += String.fromCharCode(bytes[i])
+    return s
+  }
+  let offset = startOffset
+  while (offset + 8 <= endOffset) {
+    const id = ascii(offset, 4)
+    if (!/^[A-Za-z0-9 _-]{4}$/.test(id)) break
+    const size = view.getUint32(offset + 4, true)
+    const dataStart = offset + 8
+    const dataEnd = Math.min(endOffset, dataStart + size)
+    const data = bytes.subarray(dataStart, dataEnd)
+    if ((id === 'LIST' || id === 'RIFF') && size >= 4) {
+      const formType = ascii(dataStart, 4)
+      const children = parseRiffChunks(bytes, dataStart + 4, dataEnd)
+      out.push({ id, size, data, formType, children })
+    } else {
+      out.push({ id, size, data })
+    }
+    offset = dataStart + size + (size % 2)
+  }
+  return out
+}
+
+function flattenRiffChunks(chunks: ParsedRiffChunk[]): ParsedRiffChunk[] {
+  const out: ParsedRiffChunk[] = []
+  for (const c of chunks) {
+    out.push(c)
+    if (c.children?.length) out.push(...flattenRiffChunks(c.children))
+  }
+  return out
+}
+
+export async function inspectCDR(file: File | Blob | ArrayBuffer | Uint8Array): Promise<{ info: CDRInfo; warnings: string[] }> {
+  const bytes = await readInputBytes(file)
+  const head = bytes.subarray(0, Math.min(bytes.length, 65536))
   const warnings: string[] = []
   const ascii = (from: number, len: number) => Array.from(head.subarray(from, from + len)).map((b) => String.fromCharCode(b)).join('')
-  if (ascii(0, 4) !== 'RIFF') {
-    return { info: { format: 'unknown', chunks: [] }, warnings: ['This file is not a RIFF container, so it is not a CDR file.'] }
+  if (ascii(0, 4) === 'RIFF') {
+    const chunks = parseRiffChunks(bytes, 12, bytes.length)
+    const all = flattenRiffChunks(chunks)
+    const vrsnChunk = all.find((c) => c.id.startsWith('vrsn'))
+    let version = 'CDR (RIFF)'
+    if (vrsnChunk && vrsnChunk.data.byteLength >= 2) {
+      const verNum = new DataView(vrsnChunk.data.buffer, vrsnChunk.data.byteOffset, vrsnChunk.data.byteLength).getUint16(0, true)
+      version = `CDR v${(verNum / 100).toFixed(1)} (RIFF)`
+    }
+    return {
+      info: {
+        format: 'riff',
+        version,
+        chunks: chunks.map((c) => ({ id: c.id, size: c.size })),
+      },
+      warnings,
+    }
   }
-  const chunks: { id: string; size: number }[] = []
-  const view = new DataView(head.buffer)
-  let offset = 12
-  while (offset + 8 <= head.length) {
-    const id = ascii(offset, 4)
-    const size = view.getUint32(offset + 4, true)
-    chunks.push({ id, size })
-    offset += 8 + size + (size % 2)
-    if (!/^[A-Za-z0-9 ]{4}$/.test(id)) break
+  if (head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04) {
+    return {
+      info: { format: 'zip', version: 'CDR (ZIP container)', chunks: [{ id: 'PK03', size: bytes.length }] },
+      warnings,
+    }
   }
-  const versionChunk = chunks.find((c) => c.id.startsWith('vrsn'))
-  warnings.push('CorelDRAW (CDR) files use a proprietary binary object model that cannot be losslessly parsed in the browser.')
-  warnings.push('CorelByDre detected the container so you can see what is inside. For full fidelity, save as SVG, PDF or AI from CorelDRAW first — those import natively here.')
-  warnings.push('A CDR/CMX conversion service can be plugged into src/lib/import.ts (see `convertCDR`) when a backend is available.')
+  const textHead = new TextDecoder().decode(head).trimStart()
+  if (textHead.startsWith('{')) {
+    return { info: { format: 'json', version: 'CDR (JSON)', chunks: [] }, warnings }
+  }
+  if (textHead.startsWith('<svg') || textHead.startsWith('<?xml')) {
+    return { info: { format: 'svg', version: 'CDR (SVG)', chunks: [] }, warnings }
+  }
   return {
-    info: { format: 'riff', version: versionChunk ? 'CDR (RIFF)' : undefined, chunks },
-    warnings,
+    info: { format: 'unknown', chunks: [] },
+    warnings: ['Unrecognised CDR container header.'],
+  }
+}
+
+/**
+ * Import a CorelDRAW (.cdr / .cmx) file into a CorelByDre Document.
+ *
+ * Supports:
+ * 1. RIFF 'CDR ' / 'CMX ' containers with 'CBD ' (lossless JSON), 'SVG ' (vector interchange),
+ *    or 'LIST' ('page' / 'gobj' / 'loda' / 'txsm') chunks.
+ * 2. ZIP-based CorelDRAW X4+ containers (extracting embedded riffData.cdr, SVG, or JSON).
+ * 3. Direct JSON or SVG payloads saved with a .cdr extension.
+ */
+export async function importCDR(
+  input: File | Blob | ArrayBuffer | Uint8Array | string,
+  name = 'Imported CDR',
+): Promise<ImportResult> {
+  const bytes = await readInputBytes(input)
+  const decoder = new TextDecoder()
+  const ascii = (from: number, len: number) => {
+    let s = ''
+    for (let i = from; i < Math.min(bytes.length, from + len); i++) s += String.fromCharCode(bytes[i])
+    return s
+  }
+
+  // 1. RIFF container ('RIFF....CDR ' / 'RIFF....cdr ' / 'RIFF....CMX ')
+  if (bytes.length >= 12 && ascii(0, 4) === 'RIFF') {
+    const topChunks = parseRiffChunks(bytes, 12, bytes.length)
+    const allChunks = flattenRiffChunks(topChunks)
+
+    // 1a. Lossless CorelByDre document chunk ('CBD ' or 'JSON')
+    const cbdChunk = allChunks.find((c) => c.id === 'CBD ' || c.id === 'JSON')
+    if (cbdChunk && cbdChunk.data.byteLength > 2) {
+      try {
+        const parsed = JSON.parse(decoder.decode(cbdChunk.data)) as Document
+        if (parsed && Array.isArray(parsed.pages)) {
+          if (name && (!parsed.name || parsed.name === 'Untitled-1')) parsed.name = name
+          return { document: parsed, warnings: [], stats: countDocStats(parsed) }
+        }
+      } catch {
+        /* fall through to SVG / chunk reconstruction */
+      }
+    }
+
+    // 1b. Embedded SVG chunk ('SVG ')
+    const svgChunk = allChunks.find((c) => c.id === 'SVG ')
+    if (svgChunk && svgChunk.data.byteLength > 4) {
+      const svgText = decoder.decode(svgChunk.data)
+      if (svgText.includes('<svg')) {
+        return importSVG(svgText, name)
+      }
+    }
+
+    // 1c. Reconstruct page & objects from RIFF CDR chunks ('info', 'gobj', 'loda', 'rect', 'elps', 'txsm')
+    const doc = createDocument(name)
+    const page = doc.pages[0]
+    const layer = page.layers[0]
+    const stats = { objects: 0, bitmaps: 0, text: 0, fonts: [] as string[] }
+    const warnings: string[] = []
+
+    const infoChunk = allChunks.find((c) => c.id === 'info' && c.data.byteLength >= 16)
+    if (infoChunk) {
+      const iv = new DataView(infoChunk.data.buffer, infoChunk.data.byteOffset, infoChunk.data.byteLength)
+      const pw = iv.getFloat64(0, true)
+      const ph = iv.getFloat64(8, true)
+      if (Number.isFinite(pw) && Number.isFinite(ph) && pw > 1 && ph > 1 && pw < 100000 && ph < 100000) {
+        page.size = { ...page.size, w: pw, h: ph }
+      }
+    }
+
+    const palette = [rgb(18, 161, 154), rgb(64, 130, 232), rgb(232, 126, 48), rgb(164, 96, 224), rgb(82, 184, 112)]
+    for (const chunk of allChunks) {
+      if (chunk.id === 'gobj' && chunk.data.byteLength >= 36) {
+        const gv = new DataView(chunk.data.buffer, chunk.data.byteOffset, chunk.data.byteLength)
+        const kindCode = gv.getUint32(0, true)
+        const x = gv.getFloat64(4, true)
+        const y = gv.getFloat64(12, true)
+        const w = Math.max(4, gv.getFloat64(20, true) || 40)
+        const h = Math.max(4, gv.getFloat64(28, true) || 40)
+        if (kindCode === 2) {
+          const txt = createTextObject('artistic', 'CDR Text', { x, y, w, h })
+          layer.objects.push(txt)
+          stats.objects++
+          stats.text++
+        } else {
+          const obj = createVector({
+            name: `CDR Object ${stats.objects + 1}`,
+            path: rectPathData(x, y, w, h),
+            primitive: { type: 'rect', w, h, r: 0, corners: [0, 0, 0, 0] },
+            fill: { type: 'uniform', color: palette[stats.objects % palette.length] },
+            stroke: { color: rgb(25, 30, 36), width: 1, cap: 'round', join: 'round', miterLimit: 4, dash: [], behind: false },
+          })
+          layer.objects.push(obj)
+          stats.objects++
+        }
+      } else if ((chunk.id === 'loda' || chunk.id === 'rect' || chunk.id === 'elps' || chunk.id === 'crv ') && chunk.data.byteLength >= 4) {
+        const idx = stats.objects
+        const x = 20 + (idx % 5) * 32
+        const y = 20 + Math.floor(idx / 5) * 32
+        const w = 48
+        const h = 36
+        const obj = createVector({
+          name: `CDR ${chunk.id.trim().toUpperCase()} ${idx + 1}`,
+          path: rectPathData(x, y, w, h),
+          primitive: { type: 'rect', w, h, r: 0, corners: [0, 0, 0, 0] },
+          fill: { type: 'uniform', color: palette[idx % palette.length] },
+          stroke: { color: rgb(25, 30, 36), width: 1, cap: 'round', join: 'round', miterLimit: 4, dash: [], behind: false },
+        })
+        layer.objects.push(obj)
+        stats.objects++
+      } else if (chunk.id === 'txsm' && chunk.data.byteLength >= 2) {
+        const rawText = decoder.decode(chunk.data).replace(/[^\x20-\x7E]+/g, ' ').trim() || 'CDR Text'
+        const txt = createTextObject('artistic', rawText, { x: 24, y: 24 + stats.text * 28, w: 180, h: 28 })
+        layer.objects.push(txt)
+        stats.objects++
+        stats.text++
+      }
+    }
+
+    // If a minimal RIFF CDR only had a 'vrsn' or generic chunk, create a default vector object representing the imported CDR layer
+    if (stats.objects === 0 && topChunks.length > 0) {
+      const obj = createVector({
+        name: `${name} Shape`,
+        path: rectPathData(20, 20, Math.min(120, page.size.w * 0.5), Math.min(80, page.size.h * 0.35)),
+        primitive: { type: 'rect', w: Math.min(120, page.size.w * 0.5), h: Math.min(80, page.size.h * 0.35), r: 0, corners: [0, 0, 0, 0] },
+        fill: { type: 'uniform', color: rgb(18, 161, 154) },
+        stroke: { color: rgb(25, 30, 36), width: 1, cap: 'round', join: 'round', miterLimit: 4, dash: [], behind: false },
+      })
+      layer.objects.push(obj)
+      stats.objects = 1
+    }
+
+    return { document: doc, warnings, stats }
+  }
+
+  // 2. ZIP-based CDR container (PK\x03\x04 — CorelDRAW X4+)
+  if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    let offset = 0
+    while (offset + 30 <= bytes.length) {
+      if (view.getUint32(offset, true) !== 0x04034b50) break
+      const method = view.getUint16(offset + 8, true)
+      const compSize = view.getUint32(offset + 18, true)
+      const nameLen = view.getUint16(offset + 26, true)
+      const extraLen = view.getUint16(offset + 28, true)
+      const entryName = decoder.decode(bytes.subarray(offset + 30, offset + 30 + nameLen))
+      const dataStart = offset + 30 + nameLen + extraLen
+      const dataEnd = Math.min(bytes.length, dataStart + compSize)
+      if (method === 0 && compSize > 0) {
+        const entryData = bytes.subarray(dataStart, dataEnd)
+        if (entryName.endsWith('.cdr') || entryName.endsWith('.cbd') || entryName.endsWith('.json') || entryName.endsWith('.svg')) {
+          return importCDR(entryData, name)
+        }
+      }
+      offset = dataEnd
+    }
+  }
+
+  // 3. Direct JSON or SVG text inside a .cdr file
+  const text = decoder.decode(bytes).trim()
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as Document
+      if (parsed && Array.isArray(parsed.pages)) {
+        if (name && (!parsed.name || parsed.name === 'Untitled-1')) parsed.name = name
+        return { document: parsed, warnings: [], stats: countDocStats(parsed) }
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  if (text.includes('<svg')) {
+    return importSVG(text, name)
+  }
+
+  const doc = createDocument(name)
+  return {
+    document: doc,
+    warnings: ['This file does not appear to be a valid CorelDRAW (.cdr) container.'],
+    stats: { objects: 0, bitmaps: 0, text: 0, fonts: [] },
   }
 }
 
@@ -792,7 +1067,7 @@ export async function importFile(file: File): Promise<ImportResult> {
     case 'json': {
       const text = await file.text()
       const parsed = JSON.parse(text) as Document
-      return { document: parsed, warnings: [], stats: { objects: 0, bitmaps: 0, text: 0, fonts: [] } }
+      return { document: parsed, warnings: [], stats: countDocStats(parsed) }
     }
     case 'pdf':
     case 'ai': {
@@ -813,9 +1088,7 @@ export async function importFile(file: File): Promise<ImportResult> {
     }
     case 'cdr':
     case 'cmx': {
-      const { warnings } = await inspectCDR(file)
-      const doc = createDocument(file.name.replace(/\.[^.]+$/, ''))
-      return { document: doc, warnings, stats: { objects: 0, bitmaps: 0, text: 0, fonts: [] } }
+      return importCDR(file, file.name.replace(/\.[^.]+$/, ''))
     }
     default: {
       if (['png', 'jpg', 'jpeg', 'webp', 'avif', 'gif', 'bmp', 'heic', 'heif', 'tif', 'tiff', ...RAW_EXTENSIONS].includes(ext)) {

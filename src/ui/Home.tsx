@@ -65,23 +65,23 @@ export function Home() {
         </div>
 
         <div className="home-grid">
-          <button type="button" className="home-card" onClick={() => void newDocument()}>
+          <button type="button" className="home-card" title="New document" data-tooltip="New document" onClick={() => void newDocument()}>
             <h4><Icon name="new" size={15} /> New document</h4>
             <p>Start from A4 and change the size any time in the Pages docker.</p>
           </button>
-          <button type="button" className="home-card" onClick={() => void openDocument()}>
-            <h4><Icon name="open" size={15} /> Open…</h4>
-            <p>SVG, PDF, AI, EPS, DXF, WebP, HEIF, RAW, images and CorelByDre files.</p>
+          <button type="button" className="home-card" title="Open CorelDRAW (.cdr), SVG, PDF, AI, EPS, DXF or image files" data-tooltip="Open CDR / design file" onClick={() => void openDocument()}>
+            <h4><Icon name="open" size={15} /> Open / Import CDR…</h4>
+            <p>CorelDRAW (.cdr), SVG, PDF, AI, EPS, DXF, WebP, HEIF, RAW, images and CorelByDre files.</p>
           </button>
-          <button type="button" className="home-card" onClick={() => { setHome(false); void placeImage() }}>
-            <h4><Icon name="photo" size={15} /> Place image</h4>
-            <p>Drop a photo onto the page; PHOTO-PAINT dockers pick it up automatically.</p>
+          <button type="button" className="home-card" title="Place image or import CDR / vector artwork onto the active page" data-tooltip="Import / Place into page" onClick={() => { setHome(false); void placeImage() }}>
+            <h4><Icon name="photo" size={15} /> Import / Place</h4>
+            <p>Import a .cdr, vector or photo onto the page; PHOTO-PAINT dockers pick it up automatically.</p>
           </button>
-          <button type="button" className="home-card" onClick={() => { setHome(false); setExportDialog(true) }}>
-            <h4><Icon name="export" size={15} /> Export</h4>
-            <p>SVG, PDF/X-4, PDF/A, AI, EPS, DXF, PNG, JPEG, WebP and AVIF.</p>
+          <button type="button" className="home-card" title="Export or save as CDR, SVG, PDF, AI, EPS, DXF, PNG, JPEG, WebP or AVIF" data-tooltip="Export / Save as CDR" onClick={() => { setHome(false); setExportDialog(true) }}>
+            <h4><Icon name="export" size={15} /> Save CDR / Export</h4>
+            <p>CorelDRAW (.cdr), SVG, PDF/X-4, PDF/A, AI, EPS, DXF, PNG, JPEG, WebP and AVIF.</p>
           </button>
-          <button type="button" className="home-card" onClick={() => { setHome(false); setPrintDialog(true) }}>
+          <button type="button" className="home-card" title="Print & prepress preview" data-tooltip="Print & prepress" onClick={() => { setHome(false); setPrintDialog(true) }}>
             <h4><Icon name="print" size={15} /> Print & prepress</h4>
             <p>Real-time preview, marks, bleed, separations and imposition.</p>
           </button>
@@ -91,7 +91,7 @@ export function Home() {
           <h2>Templates</h2>
           <div className="template-strip">
             {PAGE_PRESETS.map((preset) => (
-              <button key={preset.id} type="button" className="template-card" onClick={() => void newDocument(preset.id)}>
+              <button key={preset.id} type="button" className="template-card" title={`Create ${preset.label}`} data-tooltip={preset.label} onClick={() => void newDocument(preset.id)}>
                 <div className="thumb" style={{ aspectRatio: `${preset.w} / ${preset.h}`, maxHeight: 110 }}>
                   {preset.label.split(' ')[0]}
                 </div>

@@ -42,7 +42,8 @@ import {
 import { makeStrokePoints, presetByID } from '../engine/brush'
 import { createTextObject, createVector, updateObjects } from '../store/mutations'
 import { css, parseHex } from '../lib/color'
-import { clamp, makeSmoothNode, matMul, matRotate, matScale, matTranslate, node, pathFromSubpaths, rectFromPoints, subPath, vDist, type Vec } from '../lib/util'
+import { clamp, makeSmoothNode, matApply, matInvert, matMul, matRotate, matScale, matTranslate, node, pathFromSubpaths, rectFromPoints, subPath, vDist, type Vec } from '../lib/util'
+import { importIntoDocument, openDocument, saveDocument } from './fileOps'
 import {
   DEFAULT_BG_REMOVAL,
   DEFAULT_COLOR_REPLACE,
@@ -90,6 +91,8 @@ export function CanvasView() {
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ w: 900, h: 600 })
   const [panning, setPanning] = useState(false)
+  const [rotateMode, setRotateMode] = useState(false)
+  const [optionsMenu, setOptionsMenu] = useState<{ x: number; y: number; docPoint: Vec; targetId: string | null } | null>(null)
 
   const doc = useStore((s) => s.doc)
   const view = useStore((s) => s.view)
@@ -113,9 +116,29 @@ export function CanvasView() {
   const snapRef = useRef<{ v: number[]; h: number[]; points: Vec[] }>({ v: [], h: [], points: [] })
   const frameRef = useRef(0)
   const lastPresenceRef = useRef(0)
+  const rotateModeRef = useRef(false)
+  rotateModeRef.current = rotateMode
+  const leftButtonDownRef = useRef(false)
+  const activeTouchPointersRef = useRef<Map<number, Vec>>(new Map())
+  const touchGestureRef = useRef<{
+    startTime: number
+    startP1: Vec
+    startP2: Vec
+    lastP1: Vec
+    lastP2: Vec
+    startMid: Vec
+    lastMid: Vec
+    startDist: number
+    lastDist: number
+    moved: boolean
+  } | null>(null)
 
   const stateRef = useRef({ doc, page, view, tool, selection, nodeSelection, options, previewEffects, peers, actor, editingTextId })
   stateRef.current = { doc, page, view, tool, selection, nodeSelection, options, previewEffects, peers, actor, editingTextId }
+
+  useEffect(() => {
+    if (!selection.length) setRotateMode(false)
+  }, [selection.length])
 
   /* --------------------------------------------------------------- sizing -- */
 
@@ -124,7 +147,8 @@ export function CanvasView() {
     if (!element) return
     const measure = () => {
       const rect = element.getBoundingClientRect()
-      setSize({ w: Math.max(120, Math.round(rect.width) - RULER), h: Math.max(120, Math.round(rect.height) - RULER) })
+      const pad = stateRef.current.view.showRulers ? RULER : 0
+      setSize({ w: Math.max(120, Math.round(rect.width) - pad), h: Math.max(120, Math.round(rect.height) - pad) })
     }
     measure()
     const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
@@ -134,7 +158,7 @@ export function CanvasView() {
       observer?.disconnect()
       window.removeEventListener('resize', measure)
     }
-  }, [])
+  }, [view.showRulers])
 
   /* -------------------------------------------------------------- drawing -- */
 
@@ -212,6 +236,7 @@ export function CanvasView() {
       scale: zoom,
       offsetX: panX,
       offsetY: panY,
+      dpr,
       viewport: { x: 0, y: 0, w, h },
       quality: zoom > 2 ? 'high' : zoom > 0.6 ? 'normal' : 'draft',
       wireframe: v.wireframe,
@@ -257,16 +282,20 @@ export function CanvasView() {
       if (bounds && s.tool !== 'shape') {
         const a = toScreen(bounds)
         const b = toScreen({ x: bounds.x + bounds.w, y: bounds.y + bounds.h })
-        octx.strokeStyle = 'rgba(18,161,154,0.9)'
+        octx.strokeStyle = rotateModeRef.current ? '#19c2b8' : 'rgba(18,161,154,0.9)'
         octx.setLineDash([4, 3])
         octx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y)
         octx.setLineDash([])
         for (const handle of handlePoints(bounds)) {
           const p = toScreen(handle.p)
-          octx.fillStyle = '#ffffff'
+          octx.fillStyle = rotateModeRef.current ? '#12a19a' : '#ffffff'
           octx.strokeStyle = '#12a19a'
           octx.beginPath()
-          octx.rect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
+          if (rotateModeRef.current) {
+            octx.arc(p.x, p.y, HANDLE / 2 + 1, 0, Math.PI * 2)
+          } else {
+            octx.rect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
+          }
           octx.fill()
           octx.stroke()
         }
@@ -280,6 +309,27 @@ export function CanvasView() {
         octx.arc(rc.x, rc.y - 30, 5, 0, Math.PI * 2)
         octx.fillStyle = '#12a19a'
         octx.fill()
+
+        // Center 'x' rotation pivot / toggle marker at the center of the selected object(s).
+        const centerScreen = toScreen({ x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 })
+        octx.save()
+        octx.beginPath()
+        octx.arc(centerScreen.x, centerScreen.y, 7, 0, Math.PI * 2)
+        octx.fillStyle = rotateModeRef.current ? 'rgba(18,161,154,0.9)' : 'rgba(20,24,30,0.75)'
+        octx.fill()
+        octx.strokeStyle = rotateModeRef.current ? '#ffffff' : '#12a19a'
+        octx.lineWidth = 1.25
+        octx.stroke()
+        octx.beginPath()
+        const arm = 3.5
+        octx.moveTo(centerScreen.x - arm, centerScreen.y - arm)
+        octx.lineTo(centerScreen.x + arm, centerScreen.y + arm)
+        octx.moveTo(centerScreen.x + arm, centerScreen.y - arm)
+        octx.lineTo(centerScreen.x - arm, centerScreen.y + arm)
+        octx.strokeStyle = rotateModeRef.current ? '#ffffff' : '#19c2b8'
+        octx.lineWidth = 1.6
+        octx.stroke()
+        octx.restore()
       }
       octx.restore()
     }
@@ -498,7 +548,7 @@ export function CanvasView() {
     }
   }, [size.w, size.h])
 
-  useEffect(() => { scheduleDraw() }, [doc, view, selection, nodeSelection, tool, previewEffects, peers, editingTextId, scheduleDraw])
+  useEffect(() => { scheduleDraw() }, [doc, view, selection, nodeSelection, tool, previewEffects, peers, editingTextId, rotateMode, scheduleDraw])
   useEffect(() => onBitmapReady(scheduleDraw), [scheduleDraw])
   useEffect(() => () => { if (frameRef.current) cancelAnimationFrame(frameRef.current) }, [])
 
@@ -512,6 +562,101 @@ export function CanvasView() {
 
   const tolerance = () => 6 / stateRef.current.view.zoom
 
+  const openOptionsAt = useCallback((clientX: number, clientY: number) => {
+    const { screen, doc: point } = canvasPoint({ clientX, clientY })
+    const s = stateRef.current
+    const store = useStore.getState()
+    dragRef.current = null
+    setPanning(false)
+    const hit = hitTest(s.page, point, tolerance(), s.doc, true)
+    if (hit && !s.selection.includes(hit.object.id)) {
+      store.setSelection([hit.object.id])
+    }
+    const pad = s.view.showRulers ? RULER : 0
+    const menuX = clamp(screen.x + pad, 8, Math.max(8, size.w + pad - 230))
+    const menuY = clamp(screen.y + pad, 8, Math.max(8, size.h + pad - 280))
+    setOptionsMenu({
+      x: menuX,
+      y: menuY,
+      docPoint: point,
+      targetId: hit?.object.id ?? s.selection[0] ?? null,
+    })
+    store.setStatus(hit ? `${hit.object.name} — Options menu opened` : 'Options menu opened')
+  }, [size.w, size.h])
+
+  function beginTwoFingerGesture(p1: Vec, p2: Vec): void {
+    dragRef.current = null
+    setPanning(false)
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
+    const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+    touchGestureRef.current = {
+      startTime: performance.now(),
+      startP1: { ...p1 },
+      startP2: { ...p2 },
+      lastP1: { ...p1 },
+      lastP2: { ...p2 },
+      startMid: mid,
+      lastMid: mid,
+      startDist: Math.max(1, dist),
+      lastDist: Math.max(1, dist),
+      moved: false,
+    }
+  }
+
+  function updateTwoFingerGesture(p1: Vec, p2: Vec): void {
+    const g = touchGestureRef.current
+    if (!g) {
+      beginTwoFingerGesture(p1, p2)
+      return
+    }
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
+    const dist = Math.max(1, Math.hypot(p2.x - p1.x, p2.y - p1.y))
+    const move1 = vDist(p1, g.startP1)
+    const move2 = vDist(p2, g.startP2)
+    if (!g.moved && Math.max(move1, move2) < 6) return
+    g.moved = true
+    dragRef.current = null
+
+    const store = useStore.getState()
+    const s = stateRef.current
+    const dy = mid.y - g.lastMid.y
+    const dx = mid.x - g.lastMid.x
+    const distDelta = Math.abs(dist - g.lastDist)
+    const midDelta = Math.hypot(dx, dy)
+
+    let factor = 1
+    if (distDelta > midDelta * 0.5 && g.lastDist > 8) {
+      // Pinch / spread 2-finger drag
+      factor = dist / g.lastDist
+    } else {
+      // Parallel 2-finger drag (up/right zooms in, down/left zooms out) + pinch component
+      const primaryDelta = Math.abs(dy) >= Math.abs(dx) ? -dy : dx
+      const dragFactor = Math.exp(primaryDelta * 0.008)
+      const pinchFactor = g.lastDist > 8 ? dist / g.lastDist : 1
+      factor = dragFactor * pinchFactor
+    }
+
+    if (Math.abs(factor - 1) > 1e-4) {
+      const { doc: focusPoint } = canvasPoint({ clientX: g.startMid.x, clientY: g.startMid.y })
+      store.zoomTo(s.view.zoom * factor, focusPoint)
+    }
+
+    g.lastP1 = { ...p1 }
+    g.lastP2 = { ...p2 }
+    g.lastMid = mid
+    g.lastDist = dist
+  }
+
+  function endTwoFingerGesture(): void {
+    const g = touchGestureRef.current
+    if (!g) return
+    touchGestureRef.current = null
+    const elapsed = performance.now() - g.startTime
+    if (!g.moved && elapsed < 500) {
+      openOptionsAt(g.startMid.x, g.startMid.y)
+    }
+  }
+
   function handlePoints(bounds: { x: number; y: number; w: number; h: number }): { name: string; p: Vec }[] {
     const { x, y, w, h } = bounds
     return [
@@ -524,11 +669,15 @@ export function CanvasView() {
   function handleAt(screen: Vec, bounds: { x: number; y: number; w: number; h: number }): string | null {
     const v = stateRef.current.view
     const toScreen = (p: Vec) => ({ x: p.x * v.zoom + v.panX, y: p.y * v.zoom + v.panY })
+    const center = toScreen({ x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 })
+    if (Math.hypot(screen.x - center.x, screen.y - center.y) <= 10) return 'center-x'
     const rotate = toScreen({ x: bounds.x + bounds.w / 2, y: bounds.y })
     if (Math.abs(screen.x - rotate.x) <= 9 && Math.abs(screen.y - (rotate.y - 30)) <= 9) return 'rotate'
     for (const handle of handlePoints(bounds)) {
       const p = toScreen(handle.p)
-      if (Math.abs(screen.x - p.x) <= HANDLE + 2 && Math.abs(screen.y - p.y) <= HANDLE + 2) return handle.name
+      if (Math.abs(screen.x - p.x) <= HANDLE + 2 && Math.abs(screen.y - p.y) <= HANDLE + 2) {
+        return rotateModeRef.current ? 'rotate' : handle.name
+      }
     }
     return null
   }
@@ -628,6 +777,26 @@ export function CanvasView() {
     const { screen, doc: point } = canvasPoint(event)
     const s = stateRef.current
     const store = useStore.getState()
+    if (optionsMenu) setOptionsMenu(null)
+
+    if (event.pointerType === 'touch') {
+      activeTouchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+      if (activeTouchPointersRef.current.size === 2) {
+        const pts = [...activeTouchPointersRef.current.values()]
+        beginTwoFingerGesture(pts[0], pts[1])
+        return
+      }
+      if (activeTouchPointersRef.current.size > 2) return
+    }
+
+    if (event.button === 0) leftButtonDownRef.current = true
+    // Hold left click + right click tap opens options immediately.
+    if (event.button === 2 && (leftButtonDownRef.current || (event.buttons & 1) === 1)) {
+      event.preventDefault()
+      openOptionsAt(event.clientX, event.clientY)
+      return
+    }
+
     overlayRef.current?.setPointerCapture(event.pointerId)
     cursorRef.current = point
 
@@ -641,6 +810,15 @@ export function CanvasView() {
     const selected = collectObjects(s.doc, s.selection)
     const bounds = selected.length ? selectionBounds(selected, s.doc) : null
     const handle = bounds ? handleAt(screen, bounds) : null
+    if (handle === 'center-x' && bounds) {
+      const nextRotate = !rotateModeRef.current
+      rotateModeRef.current = nextRotate
+      setRotateMode(nextRotate)
+      const centre = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }
+      dragRef.current = { kind: 'rotate', centre, startAngle: Math.atan2(point.y - centre.y, point.x - centre.x), origins: objectsWithTransform(selected) }
+      store.setStatus(nextRotate ? 'Rotation mode enabled — drag handles or object to rotate' : 'Scale/move mode enabled')
+      return
+    }
     if (handle === 'rotate' && bounds) {
       const centre = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }
       dragRef.current = { kind: 'rotate', centre, startAngle: Math.atan2(point.y - centre.y, point.x - centre.x), origins: objectsWithTransform(selected) }
@@ -750,10 +928,24 @@ export function CanvasView() {
       default: {
         const hit = hitTest(s.page, point, tolerance(), s.doc, event.altKey)
         if (hit) {
+          const wasAlreadySelected = s.selection.includes(hit.object.id)
           const ids = event.shiftKey ? [...new Set([...s.selection, hit.object.id])] : [hit.object.id]
           store.select([hit.object.id], event.shiftKey)
-          dragRef.current = { kind: 'move', start: point, current: point, origins: objectsWithTransform(collectObjects(s.doc, ids)) }
+          if (!wasAlreadySelected && !event.shiftKey) {
+            rotateModeRef.current = false
+            setRotateMode(false)
+          }
+          const targetObjs = collectObjects(s.doc, ids)
+          if (rotateModeRef.current) {
+            const b = selectionBounds(targetObjs, s.doc)
+            const centre = b ? { x: b.x + b.w / 2, y: b.y + b.h / 2 } : point
+            dragRef.current = { kind: 'rotate', centre, startAngle: Math.atan2(point.y - centre.y, point.x - centre.x), origins: objectsWithTransform(targetObjs) }
+          } else {
+            dragRef.current = { kind: 'move', start: point, current: point, origins: objectsWithTransform(targetObjs) }
+          }
         } else {
+          rotateModeRef.current = false
+          setRotateMode(false)
           dragRef.current = { kind: 'marquee', start: point, current: point, additive: event.shiftKey, lasso: false, points: [] }
         }
       }
@@ -761,6 +953,15 @@ export function CanvasView() {
   }
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.pointerType === 'touch' && activeTouchPointersRef.current.has(event.pointerId)) {
+      activeTouchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+      if (activeTouchPointersRef.current.size === 2) {
+        const pts = [...activeTouchPointersRef.current.values()]
+        updateTwoFingerGesture(pts[0], pts[1])
+        return
+      }
+    }
+
     const { screen, doc: point } = canvasPoint(event)
     const s = stateRef.current
     cursorRef.current = point
@@ -807,8 +1008,10 @@ export function CanvasView() {
         const anchor = anchorFor(drag.handle, drag.bounds)
         const sx = (point.x - anchor.x) / ((drag.start.x - anchor.x) || 1)
         const sy = (point.y - anchor.y) / ((drag.start.y - anchor.y) || 1)
-        const fx = drag.handle.length === 2 ? (event.shiftKey ? Math.max(sx, sy) : sx) : sx
-        const fy = drag.handle.length === 2 ? (event.shiftKey ? Math.max(sx, sy) : sy) : sy
+        const hasX = drag.handle.includes('e') || drag.handle.includes('w')
+        const hasY = drag.handle.includes('n') || drag.handle.includes('s')
+        const fx = hasX ? (drag.handle.length === 2 && event.shiftKey ? Math.max(sx, sy) : sx) : 1
+        const fy = hasY ? (drag.handle.length === 2 && event.shiftKey ? Math.max(sx, sy) : sy) : 1
         store.commit('Scale', (d) => updateObjects(d, drag.origins.map((o) => o.id), (object) => {
           const origin = drag.origins.find((o) => o.id === object.id)!
           const m = matMul(matTranslate(anchor.x, anchor.y), matMul(matScale(fx, fy), matTranslate(-anchor.x, -anchor.y)))
@@ -844,7 +1047,7 @@ export function CanvasView() {
       case 'pen-handle': {
         const object = collectObjects(s.doc, [penRef.current?.objectId ?? ''])[0]
         if (object && object.kind === 'vector') {
-          const local = { x: point.x - object.transform.e, y: point.y - object.transform.f }
+          const local = matApply(matInvert(object.transform), point)
           const path = dragHandle(object.path, 0, drag.index, 'out', local)
           store.commit('Adjust curve', (d) => updateObjects(d, [object.id], () => ({ ...object, path })))
         }
@@ -853,7 +1056,7 @@ export function CanvasView() {
       case 'node': {
         const object = collectObjects(s.doc, s.selection).find((o): o is VectorObject => o.kind === 'vector')
         if (object && s.nodeSelection.length) {
-          const local = { x: point.x - object.transform.e, y: point.y - object.transform.f }
+          const local = matApply(matInvert(object.transform), point)
           if (drag.which === 'node') {
             const origin = nodePos(object.path, drag.sub, drag.index)
             const path = moveNode(object.path, drag.sub, drag.index, local.x - origin.x, local.y - origin.y, !event.altKey)
@@ -888,6 +1091,16 @@ export function CanvasView() {
   }
 
   const onPointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.button === 0) leftButtonDownRef.current = false
+    if (event.pointerType === 'touch') {
+      const wasTwo = activeTouchPointersRef.current.size === 2 || touchGestureRef.current !== null
+      activeTouchPointersRef.current.delete(event.pointerId)
+      if (wasTwo && activeTouchPointersRef.current.size === 0) {
+        endTwoFingerGesture()
+        dragRef.current = null
+        return
+      }
+    }
     const drag = dragRef.current
     const s = stateRef.current
     const store = useStore.getState()
@@ -1145,11 +1358,12 @@ export function CanvasView() {
         default: return { type: 'freehand' }
       }
     })()
+    const isLineLike = tool === 'line2' || tool === 'spiral' || tool === 'graphPaper'
     const object = createVector({
       path,
       primitive,
-      fill: tool === 'line2' ? { type: 'none' } : { type: 'uniform', color: useStore.getState().fillColor },
-      stroke: tool === 'line2'
+      fill: isLineLike ? { type: 'none' } : { type: 'uniform', color: useStore.getState().fillColor },
+      stroke: isLineLike
         ? { color: useStore.getState().strokeColor, width: 1, cap: 'round', join: 'round', miterLimit: 10, dash: [], behind: false }
         : null,
       name: titleCase(tool),
@@ -1505,8 +1719,9 @@ export function CanvasView() {
     const ctx = artworkRef.current?.getContext('2d')
     if (!ctx) return null
     const { view: v } = stateRef.current
+    const dpr = Math.min(2, typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1)
     try {
-      const data = ctx.getImageData(Math.round(point.x * v.zoom + v.panX), Math.round(point.y * v.zoom + v.panY), 1, 1).data
+      const data = ctx.getImageData(Math.round((point.x * v.zoom + v.panX) * dpr), Math.round((point.y * v.zoom + v.panY) * dpr), 1, 1).data
       return { r: data[0], g: data[1], b: data[2], a: data[3] / 255 }
     } catch {
       return null
@@ -1518,13 +1733,53 @@ export function CanvasView() {
   const onWheel = (event: React.WheelEvent<HTMLCanvasElement>) => {
     const store = useStore.getState()
     const s = stateRef.current
-    if (event.ctrlKey || event.metaKey) {
-      const { doc: point } = canvasPoint(event)
-      store.zoomTo(s.view.zoom * (event.deltaY < 0 ? 1.12 : 1 / 1.12), point)
-    } else if (event.shiftKey) {
-      store.setView({ panX: s.view.panX - event.deltaY })
-    } else {
+    if (event.shiftKey) {
+      store.setView({ panX: s.view.panX - (event.deltaX || event.deltaY) })
+    } else if (event.altKey) {
       store.setView({ panX: s.view.panX - event.deltaX, panY: s.view.panY - event.deltaY })
+    } else {
+      const { doc: point } = canvasPoint(event)
+      const delta = event.deltaY !== 0 ? event.deltaY : -event.deltaX
+      if (delta !== 0) {
+        store.zoomTo(s.view.zoom * (delta < 0 ? 1.12 : 1 / 1.12), point)
+      }
+    }
+  }
+
+  const onMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (event.button === 0) leftButtonDownRef.current = true
+    if (event.button === 2 && (leftButtonDownRef.current || (event.buttons & 1) === 1)) {
+      event.preventDefault()
+      openOptionsAt(event.clientX, event.clientY)
+    }
+  }
+
+  const onMouseUp = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (event.button === 0) leftButtonDownRef.current = false
+  }
+
+  const onTouchStart = (event: React.TouchEvent<HTMLCanvasElement>) => {
+    if (optionsMenu) setOptionsMenu(null)
+    if (event.touches.length === 2) {
+      const t1 = event.touches[0]
+      const t2 = event.touches[1]
+      beginTwoFingerGesture({ x: t1.clientX, y: t1.clientY }, { x: t2.clientX, y: t2.clientY })
+    } else if (event.touches.length > 2) {
+      touchGestureRef.current = null
+    }
+  }
+
+  const onTouchMove = (event: React.TouchEvent<HTMLCanvasElement>) => {
+    if (event.touches.length === 2) {
+      const t1 = event.touches[0]
+      const t2 = event.touches[1]
+      updateTwoFingerGesture({ x: t1.clientX, y: t1.clientY }, { x: t2.clientX, y: t2.clientY })
+    }
+  }
+
+  const onTouchEnd = (event: React.TouchEvent<HTMLCanvasElement>) => {
+    if (touchGestureRef.current && event.touches.length === 0) {
+      endTwoFingerGesture()
     }
   }
 
@@ -1556,8 +1811,15 @@ export function CanvasView() {
     const s = stateRef.current
     const hit = hitTest(s.page, point, tolerance(), s.doc, true)
     if (hit && !s.selection.includes(hit.object.id)) store.setSelection([hit.object.id])
-    if (!hit && event.altKey) store.addGuide(event.shiftKey ? 'y' : 'x', event.shiftKey ? point.y : point.x)
-    store.setStatus(hit ? `${hit.object.name} — use the property bar and dockers for commands` : 'No object under the pointer')
+    if (!hit && event.altKey) {
+      store.addGuide(event.shiftKey ? 'y' : 'x', event.shiftKey ? point.y : point.x)
+      return
+    }
+    if (leftButtonDownRef.current || (event.buttons & 1) === 1) {
+      openOptionsAt(event.clientX, event.clientY)
+      return
+    }
+    openOptionsAt(event.clientX, event.clientY)
   }
 
   useEffect(() => {
@@ -1568,6 +1830,8 @@ export function CanvasView() {
       if (typing) return
       const store = useStore.getState()
       if (event.key === 'Escape') {
+        setOptionsMenu(null)
+        setRotateMode(false)
         if (penRef.current) { penRef.current = null; dragRef.current = null } else store.clearSelection()
         return
       }
@@ -1589,11 +1853,18 @@ export function CanvasView() {
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code === 'Space') { spaceRef.current = false; setPanning(false) }
     }
+    const onWindowBlur = () => {
+      leftButtonDownRef.current = false
+      activeTouchPointersRef.current.clear()
+      touchGestureRef.current = null
+    }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onWindowBlur)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onWindowBlur)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -1609,7 +1880,15 @@ export function CanvasView() {
 
   const editingText = editingTextId ? collectObjects(doc, [editingTextId])[0] : undefined
   const rulers = view.showRulers
-  const cursor = panning ? 'grab' : cursorFor(tool)
+  const cursor = panning ? 'grab' : rotateMode ? 'crosshair' : cursorFor(tool)
+  const selectedObjects = selection.length ? collectObjects(doc, selection) : []
+  const selectedBounds = selectedObjects.length && tool !== 'shape' ? selectionBounds(selectedObjects, doc) : null
+  const centerXPos = selectedBounds
+    ? {
+        left: (rulers ? RULER : 0) + (selectedBounds.x + selectedBounds.w / 2) * view.zoom + view.panX,
+        top: (rulers ? RULER : 0) + (selectedBounds.y + selectedBounds.h / 2) * view.zoom + view.panY,
+      }
+    : null
 
   return (
     <div className={`canvas-wrap ${panning ? 'panning' : ''}`} ref={wrapRef}>
@@ -1622,17 +1901,120 @@ export function CanvasView() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onMouseDown={onMouseDown}
+        onMouseUp={onMouseUp}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
         onWheel={onWheel}
         onDoubleClick={onDoubleClick}
         onContextMenu={onContextMenu}
       />
+      {centerXPos && selectedBounds ? (
+        <button
+          type="button"
+          className={`center-rotate-x ${rotateMode ? 'active' : ''}`}
+          data-testid="center-rotate-x"
+          title={rotateMode ? 'Center x (rotation mode active — click to switch to scale/move or drag to rotate)' : 'Click x to allow rotating the object'}
+          aria-label="Rotate object"
+          data-tooltip="Rotate object (x)"
+          style={{ left: centerXPos.left, top: centerXPos.top }}
+          onClick={(e) => {
+            e.stopPropagation()
+            const next = !rotateModeRef.current
+            rotateModeRef.current = next
+            setRotateMode(next)
+            useStore.getState().setStatus(next ? 'Rotation mode enabled — drag handles or object to rotate' : 'Scale/move mode enabled')
+          }}
+        >
+          x
+        </button>
+      ) : null}
+      {optionsMenu ? (
+        <div
+          className="canvas-options-menu"
+          role="menu"
+          aria-label="Canvas options"
+          style={{ left: optionsMenu.x, top: optionsMenu.y }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="menu-header">
+            <span>{selectedObjects.length ? `${selectedObjects[0].name}${selectedObjects.length > 1 ? ` (+${selectedObjects.length - 1})` : ''}` : 'Workspace Options'}</span>
+            <button type="button" className="sbtn" title="Close options" aria-label="Close options" onClick={() => setOptionsMenu(null)}>×</button>
+          </div>
+          {selectedObjects.length ? (
+            <>
+              <button
+                type="button"
+                className="menu-item"
+                title="Toggle rotation mode (x)"
+                onClick={() => {
+                  const next = !rotateModeRef.current
+                  rotateModeRef.current = next
+                  setRotateMode(next)
+                  setOptionsMenu(null)
+                }}
+              >
+                <Icon name="refresh" size={13} />
+                {rotateMode ? 'Exit Rotate Mode (x)' : 'Rotate Object (x)'}
+              </button>
+              <button type="button" className="menu-item" title="Duplicate selected object" onClick={() => { useStore.getState().duplicateSelection(); setOptionsMenu(null) }}>
+                <Icon name="duplicate" size={13} /> Duplicate
+              </button>
+              <button type="button" className="menu-item" title="Delete selected object" onClick={() => { useStore.getState().deleteSelection(); setOptionsMenu(null) }}>
+                <Icon name="delete" size={13} /> Delete
+              </button>
+              <div className="menu-sep" />
+              <button type="button" className="menu-item" title="Group selected objects" disabled={selectedObjects.length < 2} onClick={() => { useStore.getState().groupSelection(); setOptionsMenu(null) }}>
+                <Icon name="group" size={13} /> Group
+              </button>
+              <button type="button" className="menu-item" title="Ungroup selected group" onClick={() => { useStore.getState().ungroupSelection(); setOptionsMenu(null) }}>
+                <Icon name="ungroup" size={13} /> Ungroup
+              </button>
+              <button type="button" className="menu-item" title="Edit nodes with Shape Tool" onClick={() => { useStore.getState().setTool('shape'); setOptionsMenu(null) }}>
+                <Icon name="node" size={13} /> Edit Nodes
+              </button>
+              <div className="menu-sep" />
+            </>
+          ) : null}
+          <button
+            type="button"
+            className="menu-item"
+            title="Select all objects on page"
+            onClick={() => {
+              const s = useStore.getState()
+              const pg = s.doc.pages.find((p) => p.id === s.doc.activePageId) ?? s.doc.pages[0]
+              s.setSelection(pg.layers.flatMap((l) => l.objects).map((o) => o.id))
+              setOptionsMenu(null)
+            }}
+          >
+            <Icon name="layers" size={13} /> Select All
+          </button>
+          <button type="button" className="menu-item" title="Zoom to fit page" onClick={() => { fitPage(size, page, useStore.getState().setView); setOptionsMenu(null) }}>
+            <Icon name="zoom-in" size={13} /> Fit Page in Window
+          </button>
+          <button type="button" className="menu-item" title="Toggle page grid" onClick={() => { useStore.getState().setView({ showGrid: !view.showGrid }); setOptionsMenu(null) }}>
+            <Icon name="grid" size={13} /> {view.showGrid ? 'Hide Grid' : 'Show Grid'}
+          </button>
+          <div className="menu-sep" />
+          <button type="button" className="menu-item" title="Import CDR or design file into page" onClick={() => { setOptionsMenu(null); void importIntoDocument() }}>
+            <Icon name="open" size={13} /> Import File (.cdr, .svg)…
+          </button>
+          <button type="button" className="menu-item" title="Open CDR or design document" onClick={() => { setOptionsMenu(null); void openDocument() }}>
+            <Icon name="open" size={13} /> Open Document (.cdr)…
+          </button>
+          <button type="button" className="menu-item" title="Save as CorelDRAW (.cdr)" onClick={() => { setOptionsMenu(null); void saveDocument(false, 'cdr') }}>
+            <Icon name="save" size={13} /> Save as CDR (.cdr)
+          </button>
+        </div>
+      ) : null}
       {rulers ? <Rulers width={size.w} height={size.h} view={view} /> : null}
       {editingText && editingText.kind === 'text' ? <TextEditor object={editingText} /> : null}
       <div className="zoom-hud">
-        <button type="button" className="sbtn" onClick={() => useStore.getState().zoomTo(view.zoom / 1.25)} aria-label="Zoom out"><Icon name="zoom-out" size={13} /></button>
-        <span>{(view.zoom * 100).toFixed(0)}%</span>
-        <button type="button" className="sbtn" onClick={() => useStore.getState().zoomTo(view.zoom * 1.25)} aria-label="Zoom in"><Icon name="zoom-in" size={13} /></button>
-        <button type="button" className="sbtn" onClick={() => fitPage(size, page, useStore.getState().setView)}>Fit</button>
+        <button type="button" className="sbtn" title="Zoom out" data-tooltip="Zoom out" onClick={() => useStore.getState().zoomTo(view.zoom / 1.25)} aria-label="Zoom out"><Icon name="zoom-out" size={13} /></button>
+        <span title="Current zoom level">{(view.zoom * 100).toFixed(0)}%</span>
+        <button type="button" className="sbtn" title="Zoom in" data-tooltip="Zoom in" onClick={() => useStore.getState().zoomTo(view.zoom * 1.25)} aria-label="Zoom in"><Icon name="zoom-in" size={13} /></button>
+        <button type="button" className="sbtn" title="Fit page to window" data-tooltip="Fit page to window" aria-label="Fit page to window" onClick={() => fitPage(size, page, useStore.getState().setView)}>Fit</button>
       </div>
       {penRef.current ? <div className="canvas-hint">Click to add nodes · drag for handles · click the first node to close · Enter/Esc to finish</div> : null}
     </div>

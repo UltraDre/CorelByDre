@@ -34,6 +34,8 @@ export interface RenderContext {
   scale: number
   offsetX: number
   offsetY: number
+  /** Device pixel ratio applied to the destination canvas (defaults to 1). */
+  dpr?: number
   /** Viewport in CSS pixels, for culling. */
   viewport: { x: number; y: number; w: number; h: number }
   quality: 'draft' | 'normal' | 'high'
@@ -82,25 +84,37 @@ export function objectIsVisible(obj: SceneObject): boolean {
 export function objectBounds(obj: SceneObject, doc?: Document): { x: number; y: number; w: number; h: number } | null {
   switch (obj.kind) {
     case 'vector': {
-      const b = pathBounds(obj.path, obj.transform)
+      const b = pathBounds(pathForObject(obj), obj.transform)
       if (!b) return null
       const pad = obj.stroke ? obj.stroke.width / 2 + (obj.blockShadow?.enabled ? Math.hypot(obj.blockShadow.dx, obj.blockShadow.dy) : 0) : 0
       return pad ? { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 } : b
     }
     case 'text': {
       if (obj.mode === 'paragraph') {
-        const c = matApply(obj.transform, { x: obj.frame.x, y: obj.frame.y })
-        const c2 = matApply(obj.transform, { x: obj.frame.x + obj.frame.w, y: obj.frame.y + obj.frame.h })
-        return { x: Math.min(c.x, c2.x), y: Math.min(c.y, c2.y), w: Math.abs(c2.x - c.x) || obj.frame.w, h: Math.abs(c2.y - c.y) || obj.frame.h }
+        const fx = obj.frame.x
+        const fy = obj.frame.y
+        const fw = obj.frame.w || 1
+        const fh = obj.frame.h || 1
+        const corners = [
+          matApply(obj.transform, { x: fx, y: fy }),
+          matApply(obj.transform, { x: fx + fw, y: fy }),
+          matApply(obj.transform, { x: fx + fw, y: fy + fh }),
+          matApply(obj.transform, { x: fx, y: fy + fh }),
+        ]
+        const xs = corners.map((c) => c.x)
+        const ys = corners.map((c) => c.y)
+        return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }
       }
       const layout = textLayoutOf(obj, doc)
       const w = layout.width || obj.style.fontSize * 4
       const h = layout.height || obj.style.fontSize * 1.2
+      const ox = obj.onPathId ? 0 : obj.frame.x
+      const oy = obj.onPathId ? 0 : obj.frame.y
       const corners = [
-        matApply(obj.transform, { x: 0, y: 0 }),
-        matApply(obj.transform, { x: w, y: 0 }),
-        matApply(obj.transform, { x: w, y: h }),
-        matApply(obj.transform, { x: 0, y: h }),
+        matApply(obj.transform, { x: ox, y: oy }),
+        matApply(obj.transform, { x: ox + w, y: oy }),
+        matApply(obj.transform, { x: ox + w, y: oy + h }),
+        matApply(obj.transform, { x: ox, y: oy + h }),
       ]
       const xs = corners.map((c) => c.x)
       const ys = corners.map((c) => c.y)
@@ -120,7 +134,19 @@ export function objectBounds(obj: SceneObject, doc?: Document): { x: number; y: 
     case 'group': {
       let rect: { x: number; y: number; w: number; h: number } | null = null
       for (const child of obj.children) rect = rectUnion(rect, objectBounds(child, doc))
-      return rect
+      if (!rect) return null
+      const m = obj.transform
+      const isIdentity = m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 && m.e === 0 && m.f === 0
+      if (isIdentity) return rect
+      const corners = [
+        matApply(m, { x: rect.x, y: rect.y }),
+        matApply(m, { x: rect.x + rect.w, y: rect.y }),
+        matApply(m, { x: rect.x + rect.w, y: rect.y + rect.h }),
+        matApply(m, { x: rect.x, y: rect.y + rect.h }),
+      ]
+      const xs = corners.map((c) => c.x)
+      const ys = corners.map((c) => c.y)
+      return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }
     }
     default:
       return null
@@ -137,15 +163,17 @@ export function selectionBounds(objects: SceneObject[], doc?: Document) {
 export function objectOutline(obj: SceneObject, doc?: Document): Vec[][] {
   switch (obj.kind) {
     case 'vector':
-      return flattenPath(obj.path, 8, obj.transform)
+      return flattenPath(pathForObject(obj), 8, obj.transform)
     case 'text': {
       const layout = textLayoutOf(obj, doc)
+      const ox = obj.onPathId ? 0 : obj.frame.x
+      const oy = obj.onPathId ? 0 : obj.frame.y
       const polys: Vec[][] = []
       for (const line of layout.lines) {
         for (const g of line.glyphs) {
           if (!g.d) continue
           for (const ring of glyphRings(g.d, line.x + g.x * 0, line.baseline, g.size)) {
-            polys.push(ring.map((p) => matApply(obj.transform, p)))
+            polys.push(ring.map((p) => matApply(obj.transform, { x: p.x + ox, y: p.y + oy })))
           }
         }
       }
@@ -166,8 +194,12 @@ export function objectOutline(obj: SceneObject, doc?: Document): Vec[][] {
         matApply(obj.transform, { x: r.x, y: r.y + r.h }),
       ]]
     }
-    case 'group':
-      return obj.children.flatMap((c) => objectOutline(c, doc))
+    case 'group': {
+      const m = obj.transform
+      const isIdentity = m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 && m.e === 0 && m.f === 0
+      const childPolys = obj.children.flatMap((c) => objectOutline(c, doc))
+      return isIdentity ? childPolys : childPolys.map((poly) => poly.map((p) => matApply(m, p)))
+    }
     default:
       return []
   }
@@ -615,11 +647,16 @@ function findIn(objects: SceneObject[], id: string): SceneObject | null {
 
 /* ------------------------------------------------------------ renderer ----- */
 
+function applyViewTransform(ctx: CanvasRenderingContext2D, rc: RenderContext): void {
+  const dpr = rc.dpr ?? 1
+  ctx.setTransform(rc.scale * dpr, 0, 0, rc.scale * dpr, rc.offsetX * dpr, rc.offsetY * dpr)
+}
+
 export function renderPageInto(ctx: CanvasRenderingContext2D, rc: RenderContext): void {
-  const { page, doc } = rc
+  const { page } = rc
   ctx.save()
-  // Document space → CSS pixel space.
-  ctx.setTransform(rc.scale, 0, 0, rc.scale, rc.offsetX, rc.offsetY)
+  // Document space → CSS pixel space (scaled by devicePixelRatio when provided).
+  applyViewTransform(ctx, rc)
   const view = viewRect(rc)
 
   for (const layer of page.layers) {
@@ -644,12 +681,17 @@ function drawLayer(ctx: CanvasRenderingContext2D, layer: Layer, rc: RenderContex
   const needsComposite = layer.opacity < 1 || layer.blend !== 'normal'
   const rcLayer: RenderContext = { ...rc, skip: rc.skip }
   if (needsComposite) {
+    const dpr = rc.dpr ?? 1
     const view = viewRect(rc)
-    const layerCanvas = cacheCanvas(`layer:${layer.id}:${Math.round(rc.scale * 100)}:${Math.round(view.w)}x${Math.round(view.h)}`, rc.viewport.w, rc.viewport.h)
+    const layerCanvas = cacheCanvas(
+      `layer:${layer.id}:${Math.round(rc.scale * 100)}:${Math.round(dpr * 100)}:${Math.round(view.w)}x${Math.round(view.h)}`,
+      rc.viewport.w * dpr,
+      rc.viewport.h * dpr,
+    )
     const lctx = layerCanvas.getContext('2d')!
     lctx.setTransform(1, 0, 0, 1, 0, 0)
     lctx.clearRect(0, 0, layerCanvas.width, layerCanvas.height)
-    lctx.setTransform(rc.scale, 0, 0, rc.scale, rc.offsetX, rc.offsetY)
+    applyViewTransform(lctx, rcLayer)
     drawObjects(lctx, layer.objects, rcLayer)
     ctx.save()
     ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -708,7 +750,7 @@ function drawBlockShadow(ctx: CanvasRenderingContext2D, obj: VectorObject, rc: R
   for (let s = steps; s >= 1; s--) {
     const m = matMul(obj.transform, { a: 1, b: 0, c: 0, d: 1, e: shadow.dx * s / rc.scale * rc.scale, f: shadow.dy * s })
     ctx.save()
-    ctx.setTransform(rc.scale, 0, 0, rc.scale, rc.offsetX, rc.offsetY)
+    applyViewTransform(ctx, rc)
     ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f)
     if (fillable && obj.fill.type !== 'none') ctx.fill(path2d)
     if (obj.stroke && (fillable || obj.stroke.behind)) {
@@ -724,7 +766,7 @@ function drawBlockShadow(ctx: CanvasRenderingContext2D, obj: VectorObject, rc: R
     ctx.globalAlpha = shadow.opacity * 0.35
     ctx.filter = `blur(${Math.max(0.5, shadow.feather / 2)}px)`
     ctx.save()
-    ctx.setTransform(rc.scale, 0, 0, rc.scale, rc.offsetX, rc.offsetY)
+    applyViewTransform(ctx, rc)
     ctx.transform(obj.transform.a, obj.transform.b, obj.transform.c, obj.transform.d, obj.transform.e + shadow.dx, obj.transform.f + shadow.dy)
     ctx.fill(path2d)
     ctx.restore()
@@ -833,12 +875,13 @@ function drawText(ctx: CanvasRenderingContext2D, obj: TextObject, rc: RenderCont
   const outlined = layout.outlined && style.fontFamily && fonts.hasOutlines(style.fontFamily)
   ctx.save()
   ctx.transform(obj.transform.a, obj.transform.b, obj.transform.c, obj.transform.d, obj.transform.e, obj.transform.f)
+  if (!obj.onPathId) ctx.translate(obj.frame.x, obj.frame.y)
   if (obj.mode === 'paragraph' && style.bullet !== 'none' && rc.quality !== 'draft') {
     ctx.save()
     ctx.strokeStyle = 'rgba(120,150,180,0.35)'
     ctx.setLineDash([3, 3])
     ctx.lineWidth = 1 / rc.scale
-    ctx.strokeRect(obj.frame.x, obj.frame.y, obj.frame.w, obj.frame.h)
+    ctx.strokeRect(0, 0, obj.frame.w, obj.frame.h)
     ctx.restore()
   }
   ctx.fillStyle = css(style.color)
@@ -970,7 +1013,7 @@ export function drawPowerClipContent(ctx: CanvasRenderingContext2D, frame: Vecto
   const path2d = pathToPath2D(pathForObject(frame))
   ctx.transform(frame.transform.a, frame.transform.b, frame.transform.c, frame.transform.d, frame.transform.e, frame.transform.f)
   ctx.clip(path2d)
-  ctx.setTransform(rc.scale, 0, 0, rc.scale, rc.offsetX, rc.offsetY)
+  applyViewTransform(ctx, rc)
   drawObjects(ctx, content, rc)
   ctx.restore()
 }
@@ -981,31 +1024,43 @@ export function hitTestObject(obj: SceneObject, point: Vec, tolerance: number, d
   if (!obj.visible) return false
   const inv = matInvert(obj.transform)
   const local = matApply(inv, point)
-  const localTol = tolerance / Math.max(0.05, Math.hypot(obj.transform.a, obj.transform.b))
+  const scaleX = Math.hypot(obj.transform.a, obj.transform.b)
+  const scaleY = Math.hypot(obj.transform.c, obj.transform.d)
+  const localTol = tolerance / Math.max(0.05, Math.min(scaleX, scaleY))
   switch (obj.kind) {
     case 'vector': {
-      const loops = flattenPath(pathForObject(obj), 8)
+      const path = pathForObject(obj)
+      const loops = flattenPath(path, 12)
       const filled = obj.fill.type !== 'none'
-      if (filled) {
+      const hasClosed = path.subpaths.some((sp) => sp.closed)
+      if (filled || hasClosed) {
         let inside = false
-        for (const loop of loops) if (pointInPolygon(local, loop)) inside = !inside
+        for (let i = 0; i < loops.length; i++) {
+          const sp = path.subpaths[i]
+          if (sp && !sp.closed && !filled) continue
+          if (pointInPolygon(local, loops[i])) inside = !inside
+        }
         if (inside) return true
       }
-      const strokeW = obj.stroke ? obj.stroke.width : obj.brush ? obj.brush.size : 6
+      const strokeW = obj.stroke ? obj.stroke.width : obj.brush ? obj.brush.size : 2
       for (const loop of loops) if (distToPolyline(local, loop) <= strokeW / 2 + localTol) return true
       return false
     }
     case 'text': {
-      const b = objectBounds(obj, doc)
-      if (!b) return false
-      return point.x >= b.x - tolerance && point.x <= b.x + b.w + tolerance && point.y >= b.y - tolerance && point.y <= b.y + b.h + tolerance
+      const layout = textLayoutOf(obj, doc)
+      const ox = obj.onPathId ? 0 : obj.frame.x
+      const oy = obj.onPathId ? 0 : obj.frame.y
+      const w = obj.mode === 'paragraph' ? (obj.frame.w || 1) : (layout.width || obj.style.fontSize * 4)
+      const h = obj.mode === 'paragraph' ? (obj.frame.h || 1) : (layout.height || obj.style.fontSize * 1.2)
+      return local.x >= ox - localTol && local.x <= ox + w + localTol
+        && local.y >= oy - localTol && local.y <= oy + h + localTol
     }
     case 'bitmap': {
       return local.x >= obj.rect.x - localTol && local.x <= obj.rect.x + obj.rect.w + localTol
         && local.y >= obj.rect.y - localTol && local.y <= obj.rect.y + obj.rect.h + localTol
     }
     case 'group':
-      return obj.children.some((c) => hitTestObject(c, point, tolerance, doc))
+      return obj.children.some((c) => hitTestObject(c, local, localTol, doc))
     default:
       return false
   }

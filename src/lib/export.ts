@@ -18,7 +18,7 @@ import { objectBounds, pathForObject, textLayoutOf } from '../engine/render'
 import { getPatternTile } from './patterns'
 
 export interface ExportOptions {
-  format: 'svg' | 'pdf' | 'eps' | 'ai' | 'png' | 'jpg' | 'webp' | 'avif' | 'dxf'
+  format: 'cdr' | 'svg' | 'pdf' | 'eps' | 'ai' | 'png' | 'jpg' | 'webp' | 'avif' | 'dxf'
   scale?: number
   quality?: number
   background?: boolean
@@ -761,6 +761,93 @@ export function separationPreview(
   }
   ctx.putImageData(out, 0, 0)
   return canvas.toDataURL('image/png')
+}
+
+/* ------------------------------------------------------------------ CDR ---- */
+
+function makeRiffChunk(id: string, payload: Uint8Array): Uint8Array {
+  const pad = payload.byteLength % 2
+  const out = new Uint8Array(8 + payload.byteLength + pad)
+  const view = new DataView(out.buffer)
+  for (let i = 0; i < 4; i++) out[i] = id.charCodeAt(i) & 0xff
+  view.setUint32(4, payload.byteLength, true)
+  out.set(payload, 8)
+  return out
+}
+
+function makeRiffList(formType: string, children: Uint8Array[]): Uint8Array {
+  const innerLen = 4 + children.reduce((sum, c) => sum + c.byteLength, 0)
+  const payload = new Uint8Array(innerLen)
+  for (let i = 0; i < 4; i++) payload[i] = formType.charCodeAt(i) & 0xff
+  let offset = 4
+  for (const child of children) {
+    payload.set(child, offset)
+    offset += child.byteLength
+  }
+  return makeRiffChunk('LIST', payload)
+}
+
+/**
+ * Serialise a CorelByDre Document into a RIFF 'CDR ' container (.cdr).
+ *
+ * The container includes:
+ * - 'vrsn': CorelDRAW version tag (2400 = v24.0)
+ * - 'CBD ': Full lossless CorelByDre JSON document model
+ * - 'SVG ': Standard SVG vector interchange representation of the active page
+ * - 'LIST' ('page'): Page geometry and object summary records for RIFF readers
+ */
+export function exportCDR(doc: Document, page?: Page, options: ExportOptions = DEFAULT_EXPORT): Uint8Array {
+  const activePage = page ?? doc.pages.find((p) => p.id === doc.activePageId) ?? doc.pages[0]
+  const encoder = new TextEncoder()
+
+  // 1. Version chunk ('vrsn')
+  const vrsnPayload = new Uint8Array(2)
+  new DataView(vrsnPayload.buffer).setUint16(0, 2400, true)
+  const vrsnChunk = makeRiffChunk('vrsn', vrsnPayload)
+
+  // 2. Lossless CorelByDre document chunk ('CBD ')
+  const jsonBytes = encoder.encode(JSON.stringify({ ...doc, modifiedAt: Date.now() }))
+  const cbdChunk = makeRiffChunk('CBD ', jsonBytes)
+
+  // 3. Vector SVG interchange chunk ('SVG ')
+  const svgString = exportSVG(doc, activePage, options)
+  const svgChunk = makeRiffChunk('SVG ', encoder.encode(svgString))
+
+  // 4. Page LIST chunk ('page') with page info + object descriptors
+  const pageInfoPayload = new Uint8Array(16)
+  const pageInfoView = new DataView(pageInfoPayload.buffer)
+  pageInfoView.setFloat64(0, activePage.size.w, true)
+  pageInfoView.setFloat64(8, activePage.size.h, true)
+  const pageChildren: Uint8Array[] = [makeRiffChunk('info', pageInfoPayload)]
+  for (const layer of activePage.layers) {
+    for (const obj of layer.objects) {
+      const b = objectBounds(obj, doc) ?? { x: 0, y: 0, w: 10, h: 10 }
+      const gobjPayload = new Uint8Array(36)
+      const gv = new DataView(gobjPayload.buffer)
+      const kindCode = obj.kind === 'vector' ? 1 : obj.kind === 'text' ? 2 : obj.kind === 'bitmap' ? 3 : 4
+      gv.setUint32(0, kindCode, true)
+      gv.setFloat64(4, b.x, true)
+      gv.setFloat64(12, b.y, true)
+      gv.setFloat64(20, b.w, true)
+      gv.setFloat64(28, b.h, true)
+      pageChildren.push(makeRiffChunk('gobj', gobjPayload))
+    }
+  }
+  const pageListChunk = makeRiffList('page', pageChildren)
+
+  const chunks = [vrsnChunk, cbdChunk, svgChunk, pageListChunk]
+  const bodySize = 4 + chunks.reduce((sum, c) => sum + c.byteLength, 0)
+  const out = new Uint8Array(8 + bodySize)
+  const headerView = new DataView(out.buffer)
+  out[0] = 0x52; out[1] = 0x49; out[2] = 0x46; out[3] = 0x46 // 'RIFF'
+  headerView.setUint32(4, bodySize, true)
+  out[8] = 0x43; out[9] = 0x44; out[10] = 0x52; out[11] = 0x20 // 'CDR '
+  let offset = 12
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return out
 }
 
 /* --------------------------------------------------------------- helpers --- */

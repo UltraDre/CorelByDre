@@ -14,6 +14,7 @@ function ToolIcon({ id }: { id: ToolID }) {
 export function Toolbox() {
   const tool = useStore((s) => s.tool)
   const setTool = useStore((s) => s.setTool)
+  const setStatus = useStore((s) => s.setStatus)
   const [openGroup, setOpenGroup] = useState<string | null>(null)
   const [primary, setPrimary] = useState<Record<string, ToolID>>(() =>
     Object.fromEntries(TOOL_GROUPS.map((g) => [g.id, g.tools[0]])),
@@ -36,14 +37,18 @@ export function Toolbox() {
         const primaryId = group.tools.includes(primary[groupId]) ? primary[groupId] : group.tools[0]
         const def = toolDef(primaryId)
         const isOpen = openGroup === groupId
+        const tip = `${def.label}${def.shortcut ? ` (${def.shortcut})` : ''}`
         return (
           <div key={groupId} style={{ position: 'relative' }}>
             {index === 4 || index === 7 || index === 11 ? <div className="group-sep" /> : null}
             <button
               type="button"
               className={`tool ${tool === def.id ? 'active' : ''}`}
-              title={`${def.label}${def.shortcut ? ` (${def.shortcut})` : ''} — ${def.hint}`}
+              title={`${tip} — ${def.hint}`}
+              aria-label={def.label}
+              data-tooltip={tip}
               onClick={() => setTool(def.id)}
+              onMouseEnter={() => setStatus(`${tip} — ${def.hint}`)}
               onContextMenu={(e) => { e.preventDefault(); setOpenGroup(isOpen ? null : groupId) }}
               onPointerDown={() => {
                 holdTimer.current = window.setTimeout(() => setOpenGroup(groupId), 320)
@@ -59,6 +64,7 @@ export function Toolbox() {
                 type="button"
                 aria-label={`${group.label} flyout`}
                 title={`${group.label} — ${group.tools.length} tools`}
+                data-tooltip={`${group.label} flyout`}
                 onClick={() => setOpenGroup(isOpen ? null : groupId)}
                 style={{
                   position: 'absolute', right: 0, bottom: 0, width: 12, height: 12,
@@ -68,21 +74,27 @@ export function Toolbox() {
             ) : null}
             {isOpen ? (
               <div className="tool-flyout" style={{ top: 0 }}>
-                {group.tools.map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className={`tool ${tool === id ? 'active' : ''}`}
-                    title={`${TOOLS[id].label}${TOOLS[id].shortcut ? ` (${TOOLS[id].shortcut})` : ''} — ${TOOLS[id].hint}`}
-                    onClick={() => {
-                      setPrimary((p) => ({ ...p, [groupId]: id }))
-                      setTool(id)
-                      setOpenGroup(null)
-                    }}
-                  >
-                    <ToolIcon id={id} />
-                  </button>
-                ))}
+                {group.tools.map((id) => {
+                  const subTip = `${TOOLS[id].label}${TOOLS[id].shortcut ? ` (${TOOLS[id].shortcut})` : ''}`
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`tool ${tool === id ? 'active' : ''}`}
+                      title={`${subTip} — ${TOOLS[id].hint}`}
+                      aria-label={TOOLS[id].label}
+                      data-tooltip={subTip}
+                      onMouseEnter={() => setStatus(`${subTip} — ${TOOLS[id].hint}`)}
+                      onClick={() => {
+                        setPrimary((p) => ({ ...p, [groupId]: id }))
+                        setTool(id)
+                        setOpenGroup(null)
+                      }}
+                    >
+                      <ToolIcon id={id} />
+                    </button>
+                  )
+                })}
               </div>
             ) : null}
           </div>

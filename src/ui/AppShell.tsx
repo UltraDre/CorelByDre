@@ -17,9 +17,9 @@ import { CommentsDocker, NotificationCentre, PresenceAvatars, ShareDocker } from
 import { useCollab } from '../store/collab'
 import { Home } from './Home'
 import { BrandMark, Icon, type IconName } from './icons'
-import { Button, IconButton, Toasts } from './widgets'
+import { Button, HoverTooltip, IconButton, Toasts } from './widgets'
 import { ExportDialog, PrintDialog } from './Dialogs'
-import { autosave, newDocument, openDocument, placeImage, printDocument, saveDocument } from './fileOps'
+import { autosave, importIntoDocument, newDocument, openDocument, placeImage, printDocument, saveDocument } from './fileOps'
 import { kernelStatus } from '../lib/wasm'
 import { MOD_KEY_LABEL } from '../lib/util'
 import { listSyncJobs, requestBackgroundSync, type SyncJob } from '../lib/storage'
@@ -73,6 +73,7 @@ export function AppShell() {
       <ExportDialog />
       <PrintDialog />
       <Toasts />
+      <HoverTooltip />
       <span hidden>{doc.id}{dirty ? '' : ''}</span>
     </div>
   )
@@ -95,7 +96,7 @@ function TitleBar() {
 
   return (
     <header className="titlebar">
-      <button type="button" className="btn ghost small" onClick={() => setHome(true)} title="Home — templates, recent files and install">
+      <button type="button" className="btn ghost small" onClick={() => setHome(true)} title="Home — templates, recent files and install" aria-label="Home" data-tooltip="Home">
         <BrandMark size={18} />
       </button>
       <span className="brand">
@@ -106,8 +107,8 @@ function TitleBar() {
         {doc.name}{dirty ? <span className="dirty-dot"> •</span> : ''} — {doc.pages.length} page{doc.pages.length === 1 ? '' : 's'}
       </span>
       <span className="spacer" />
-      <IconButton icon="open" title={`Open (${MOD_KEY_LABEL}+O)`} onClick={() => void openDocument()} />
-      <IconButton icon="save" title={`Save (${MOD_KEY_LABEL}+S)`} onClick={() => void saveDocument()} />
+      <IconButton icon="open" title={`Open CDR / Document (${MOD_KEY_LABEL}+O)`} onClick={() => void openDocument()} />
+      <IconButton icon="save" title={`Save as CDR (${MOD_KEY_LABEL}+S)`} onClick={() => void saveDocument(false, 'cdr')} />
       <IconButton icon="export" title={`Export (${MOD_KEY_LABEL}+E)`} onClick={() => setExportDialog(true)} />
       <IconButton icon="print" title={`Print (${MOD_KEY_LABEL}+P)`} onClick={() => useStore.getState().setPrintDialog(true)} />
       <IconButton icon="undo" title={`Undo (${MOD_KEY_LABEL}+Z)`} onClick={undo} disabled={!canUndo} />
@@ -151,11 +152,13 @@ function MenuBar() {
     {
       id: 'file', label: 'File', items: [
         { label: 'New…', shortcut: `${MOD_KEY_LABEL}+N`, action: () => void newDocument() },
-        { label: 'Open…', shortcut: `${MOD_KEY_LABEL}+O`, action: () => void openDocument() },
+        { label: 'Open (.cdr, .cbd, .svg, .pdf)…', shortcut: `${MOD_KEY_LABEL}+O`, action: () => void openDocument() },
+        { label: 'Import / Place (.cdr, .svg, .pdf, image)…', shortcut: `${MOD_KEY_LABEL}+I`, action: () => void importIntoDocument() },
         { label: 'Place image…', action: () => void placeImage() },
         { separator: true, label: '' },
-        { label: 'Save', shortcut: `${MOD_KEY_LABEL}+S`, action: () => void saveDocument() },
-        { label: 'Save as…', shortcut: `${MOD_KEY_LABEL}+⇧+S`, action: () => void saveDocument(true) },
+        { label: 'Save (.cdr)', shortcut: `${MOD_KEY_LABEL}+S`, action: () => void saveDocument(false, 'cdr') },
+        { label: 'Save as CDR (.cdr)…', shortcut: `${MOD_KEY_LABEL}+⇧+S`, action: () => void saveDocument(true, 'cdr') },
+        { label: 'Save as CBD (.cbd)…', action: () => void saveDocument(true, 'cbd') },
         { separator: true, label: '' },
         { label: 'Export…', shortcut: `${MOD_KEY_LABEL}+E`, action: () => store.setExportDialog(true) },
         { label: 'Print preview…', shortcut: `${MOD_KEY_LABEL}+P`, action: () => store.setPrintDialog(true) },
@@ -267,6 +270,25 @@ const DOCKER_ICONS: Record<DockerID, IconName> = {
   comments: 'comment', collab: 'users',
 }
 
+const DOCKER_LABELS: Record<DockerID, string> = {
+  object: 'Object Properties',
+  color: 'Color & Fill',
+  layers: 'Layers',
+  pages: 'Pages',
+  effects: 'Live Effects',
+  adjustments: 'Photo Adjustments',
+  masking: 'Masking',
+  retouch: 'Photo Retouch',
+  text: 'Text & Typography',
+  brush: 'Brush Settings',
+  history: 'Undo History',
+  print: 'Print & Prepress',
+  shaping: 'Shaping & Booleans',
+  symbols: 'Symbols',
+  comments: 'Comments',
+  collab: 'Collaborate & Share',
+}
+
 export function DockersPanel() {
   const dockers = useStore((s) => s.dockers)
   const toggle = useStore((s) => s.toggleDocker)
@@ -276,11 +298,19 @@ export function DockersPanel() {
   return (
     <aside className={`dockers ${collapsed ? 'collapsed' : ''}`}>
       <div className="dockers-rail" style={{ flexDirection: 'row', flexWrap: 'wrap', borderBottom: '1px solid var(--line)' }}>
-        <button type="button" title={collapsed ? 'Show dockers' : 'Collapse dockers'} onClick={() => setCollapsed((c) => !c)}>
+        <button type="button" title={collapsed ? 'Show dockers' : 'Collapse dockers'} aria-label={collapsed ? 'Show dockers' : 'Collapse dockers'} data-tooltip={collapsed ? 'Show dockers' : 'Collapse dockers'} onClick={() => setCollapsed((c) => !c)}>
           <Icon name={collapsed ? 'drag' : 'close'} size={14} />
         </button>
         {(Object.keys(dockers) as DockerID[]).map((id) => (
-          <button key={id} type="button" className={dockers[id] ? 'on' : ''} title={id} onClick={() => toggle(id)}>
+          <button
+            key={id}
+            type="button"
+            className={dockers[id] ? 'on' : ''}
+            title={DOCKER_LABELS[id] ?? id}
+            aria-label={DOCKER_LABELS[id] ?? id}
+            data-tooltip={DOCKER_LABELS[id] ?? id}
+            onClick={() => toggle(id)}
+          >
             <Icon name={DOCKER_ICONS[id]} size={14} />
           </button>
         ))}
@@ -443,8 +473,9 @@ function useShortcuts(): void {
         switch (e.key.toLowerCase()) {
           case 'z': e.preventDefault(); e.shiftKey ? store.redo() : store.undo(); return
           case 'y': e.preventDefault(); store.redo(); return
-          case 's': e.preventDefault(); void saveDocument(e.shiftKey); return
+          case 's': e.preventDefault(); void saveDocument(e.shiftKey, 'cdr'); return
           case 'o': e.preventDefault(); void openDocument(); return
+          case 'i': e.preventDefault(); void importIntoDocument(); return
           case 'e': e.preventDefault(); store.setExportDialog(true); return
           case 'p': e.preventDefault(); store.setPrintDialog(true); return
           case 'd': e.preventDefault(); store.duplicateSelection(); return

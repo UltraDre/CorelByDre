@@ -116,6 +116,7 @@ export function Icon({ name, size = 18, ...rest }: IconProps) {
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
+      data-icon={name}
       {...rest}
     >
       <path d={PATHS[name]} />
@@ -125,7 +126,7 @@ export function Icon({ name, size = 18, ...rest }: IconProps) {
 
 export function BrandMark({ size = 20 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" data-icon="CorelByDre">
       <defs>
         <linearGradient id="cbd-mark" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stopColor="#19c2b8" />

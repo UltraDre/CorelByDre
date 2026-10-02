@@ -92,13 +92,14 @@ export function defaultWebRenderer(ctx: CanvasRenderingContext2D, request: Rende
   }
   const scaleX = pixelWidth / rect.w
   const scaleY = pixelHeight / rect.h
+  const scale = Math.min(scaleX, scaleY)
   ctx.setTransform(scaleX, 0, 0, scaleY, -rect.x * scaleX, -rect.y * scaleY)
   renderPageInto(ctx, {
     doc,
     page,
-    scale: Math.min(scaleX, scaleY),
-    offsetX: 0,
-    offsetY: 0,
+    scale,
+    offsetX: -rect.x * scale,
+    offsetY: -rect.y * scale,
     viewport: { x: 0, y: 0, w: pixelWidth, h: pixelHeight },
     quality: 'high',
     wireframe: false,

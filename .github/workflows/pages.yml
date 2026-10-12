@@ -9,6 +9,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: read
 
 concurrency:
   group: github-pages
@@ -29,6 +30,20 @@ jobs:
         run: npm ci
       - name: Build the app
         run: npm run build
+      - name: Wait for legacy branch Pages build to finish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 40); do
+            ACTIVE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}" \
+              --jq '[.workflow_runs[] | select(.path == "dynamic/pages/pages-build-deployment" or .name == "pages build and deployment") | select(.status != "completed")] | length' 2>/dev/null || echo 0)
+            if [ "${ACTIVE:-0}" -eq 0 ]; then
+              break
+            fi
+            echo "Waiting for legacy pages-build-deployment to finish (${ACTIVE} active)..."
+            sleep 5
+          done
+          sleep 3
       - name: Configure Pages
         uses: actions/configure-pages@v5
       - name: Upload Pages artifact
@@ -43,6 +58,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      - name: Ensure legacy branch Pages build has completed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 40); do
+            ACTIVE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}" \
+              --jq '[.workflow_runs[] | select(.path == "dynamic/pages/pages-build-deployment" or .name == "pages build and deployment") | select(.status != "completed")] | length' 2>/dev/null || echo 0)
+            if [ "${ACTIVE:-0}" -eq 0 ]; then
+              break
+            fi
+            echo "Waiting for legacy pages-build-deployment to finish (${ACTIVE} active)..."
+            sleep 5
+          done
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

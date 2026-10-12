@@ -127,4 +127,25 @@ describe('editor shell', () => {
     await act(async () => { root?.unmount() })
     container.remove()
   })
+
+  it('mounts cleanly even if 2D canvas contexts are unavailable', async () => {
+    const originalGetContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => null) as unknown as HTMLCanvasElement['getContext']
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    let root: Root | null = null
+    try {
+      await act(async () => {
+        root = createRoot(container)
+        root.render(<App />)
+      })
+      await act(async () => { await Promise.resolve() })
+      expect(container.textContent).toContain('CorelByDre')
+      expect(container.querySelector('canvas.stage')).not.toBeNull()
+    } finally {
+      await act(async () => { root?.unmount() })
+      container.remove()
+      HTMLCanvasElement.prototype.getContext = originalGetContext
+    }
+  })
 })

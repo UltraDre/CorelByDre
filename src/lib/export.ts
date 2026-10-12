@@ -109,7 +109,7 @@ function strokeAttrs(stroke: Stroke | null, precision: number, markers = ''): st
   if (stroke.color.a < 1) parts.push(`stroke-opacity="${stroke.color.a.toFixed(3)}"`)
   if (stroke.cap !== 'butt') parts.push(`stroke-linecap="${stroke.cap}"`)
   if (stroke.join !== 'miter') parts.push(`stroke-linejoin="${stroke.join}"`)
-  parts.push(`stroke-miterlimit="${stroke.miterLimit.toFixed(precision)}"`)
+  parts.push(`stroke-miterlimit="${(stroke.miterLimit ?? 10).toFixed(precision)}"`)
   if (stroke.dash?.length) parts.push(`stroke-dasharray="${stroke.dash.map((length) => length.toFixed(precision)).join(' ')}"`)
   if (markers) parts.push(markers)
   return parts.join(' ')

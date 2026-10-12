@@ -289,7 +289,9 @@ export function ColorPicker({ value, onChange, showAlpha = true, showPalettes = 
   useEffect(() => {
     const canvas = areaRef.current
     if (!canvas) return
-    const ctx = canvas.getContext('2d')!
+    let ctx: CanvasRenderingContext2D | null = null
+    try { ctx = canvas.getContext('2d') } catch { ctx = null }
+    if (!ctx) return
     const w = canvas.width
     const h = canvas.height
     ctx.fillStyle = `hsl(${hue} 100% 50%)`
@@ -409,7 +411,9 @@ export function CurveEditor({ points, onChange, channelColor = '#12a19a' }: { po
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const ctx = canvas.getContext('2d')!
+    let ctx: CanvasRenderingContext2D | null = null
+    try { ctx = canvas.getContext('2d') } catch { ctx = null }
+    if (!ctx) return
     const w = canvas.width
     const h = canvas.height
     ctx.clearRect(0, 0, w, h)
@@ -530,7 +534,9 @@ export function Histogram({ bins, height = 64, channels }: { bins: Int32Array; h
   useEffect(() => {
     const canvas = ref.current
     if (!canvas) return
-    const ctx = canvas.getContext('2d')!
+    let ctx: CanvasRenderingContext2D | null = null
+    try { ctx = canvas.getContext('2d') } catch { ctx = null }
+    if (!ctx) return
     const w = canvas.width
     const h = canvas.height
     ctx.clearRect(0, 0, w, h)

@@ -310,19 +310,22 @@ export const useStore = create<AppState>()(
       }
     }),
 
-    replaceDocument: (doc, options) => set((s) => ({
-      doc,
-      history: [],
-      future: [],
-      lastRepeat: null,
-      selection: [],
-      nodeSelection: [],
-      activeLayerId: doc.pages.find((p) => p.id === doc.activePageId)?.layers[0]?.id ?? '',
-      fileHandle: options?.fileHandle ?? null,
-      dirty: !options?.markClean,
-      homeVisible: false,
-      view: s.view,
-    })),
+    replaceDocument: (doc, options) => set((s) => {
+      const normalized = M.normalizeDocument(doc)
+      return {
+        doc: normalized,
+        history: [],
+        future: [],
+        lastRepeat: null,
+        selection: [],
+        nodeSelection: [],
+        activeLayerId: normalized.pages.find((p) => p.id === normalized.activePageId)?.layers[0]?.id ?? '',
+        fileHandle: options?.fileHandle ?? null,
+        dirty: !options?.markClean,
+        homeVisible: false,
+        view: s.view,
+      }
+    }),
 
     markSaved: (handle) => set((s) => ({ dirty: false, fileHandle: handle === undefined ? s.fileHandle : handle })),
 

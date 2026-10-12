@@ -17,6 +17,8 @@ registerGlyphParser((d: string) => parseSvgPath(d))
 const root = document.getElementById('root')
 if (!root) throw new Error('#root is missing from index.html')
 
+;(window as unknown as { __CORELBYDRE_MOUNTED__?: boolean }).__CORELBYDRE_MOUNTED__ = true
+
 createRoot(root).render(
   <StrictMode>
     <App />

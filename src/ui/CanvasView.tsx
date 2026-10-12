@@ -18,14 +18,12 @@ import { TextEditor } from './TextEditor'
 import { Icon } from './icons'
 import { hitTest, objectBounds, objectOutline, objectsInRect, onBitmapReady, renderPageInto, selectionBounds } from '../engine/render'
 import {
-  ENVELOPE_PRESETS,
-  applyEnvelope,
   breakApart,
+  calligraphyOutline,
   deleteNode,
   distortNodes,
   dragHandle,
   ellipsePath,
-  envelopePreset,
   graphPaperPath,
   homographyFromQuad,
   insertNode,
@@ -35,6 +33,7 @@ import {
   refineCurve,
   spiralPath,
   starPath,
+  setNodeType,
   threePointEllipse,
   threePointRect,
   variableOutline,
@@ -76,6 +75,7 @@ type Drag =
   | { kind: 'scale'; handle: string; start: Vec; bounds: { x: number; y: number; w: number; h: number }; origins: { id: string; transform: Matrix }[] }
   | { kind: 'rotate'; centre: Vec; startAngle: number; origins: { id: string; transform: Matrix }[] }
   | { kind: 'create'; start: Vec; current: Vec; shift: boolean }
+  | { kind: 'extrude'; start: Vec; pointerStart: Vec; current: Vec; targetId: string }
   | { kind: 'draw'; points: Vec[]; pressures: number[] }
   | { kind: 'pen-handle'; index: number }
   | { kind: 'node'; sub: number; index: number; which: 'node' | 'in' | 'out' }
@@ -238,9 +238,9 @@ export function CanvasView() {
       offsetY: panY,
       dpr,
       viewport: { x: 0, y: 0, w, h },
-      quality: zoom > 2 ? 'high' : zoom > 0.6 ? 'normal' : 'draft',
-      wireframe: v.wireframe,
-      effects: s.previewEffects,
+      quality: v.displayMode === 'draft' ? 'draft' : v.displayMode === 'enhanced' && zoom > 2 ? 'high' : zoom > 0.6 ? 'normal' : 'draft',
+      wireframe: v.wireframe || v.displayMode === 'simple-wireframe' || v.displayMode === 'wireframe',
+      effects: s.previewEffects && v.displayMode !== 'draft',
     })
     if (v.showGuides) {
       ctx.save()
@@ -412,6 +412,21 @@ export function CanvasView() {
           octx.stroke()
           octx.setLineDash([])
         }
+      } else if (drag.kind === 'extrude') {
+        const a = toScreen(drag.start)
+        const b = toScreen(drag.current)
+        octx.beginPath()
+        octx.moveTo(a.x, a.y)
+        octx.lineTo(b.x, b.y)
+        octx.strokeStyle = '#19c2b8'
+        octx.lineWidth = 2
+        octx.setLineDash([5, 3])
+        octx.stroke()
+        octx.setLineDash([])
+        octx.beginPath()
+        octx.arc(b.x, b.y, 4, 0, Math.PI * 2)
+        octx.fillStyle = '#19c2b8'
+        octx.fill()
       } else if (drag.kind === 'zoom-rect') {
         const a = toScreen(drag.start)
         const b = toScreen(drag.current)
@@ -426,8 +441,9 @@ export function CanvasView() {
           if (index === 0) octx.moveTo(p.x, p.y)
           else octx.lineTo(p.x, p.y)
         })
-        octx.strokeStyle = s.tool === 'brush' ? 'rgba(18,161,154,0.85)' : '#e9edf2'
-        octx.lineWidth = s.tool === 'brush' ? Math.max(1, s.options.brushWidth * zoom * 0.35) : 1.4
+        octx.strokeStyle = s.tool === 'brush' || s.tool === 'calligraphy' ? 'rgba(18,161,154,0.85)' : '#e9edf2'
+        octx.lineWidth = s.tool === 'brush' ? Math.max(1, s.options.brushWidth * zoom * 0.35)
+          : s.tool === 'calligraphy' ? Math.max(1, s.options.calligraphyNibWidth * zoom * 0.35) : 1.4
         octx.lineCap = 'round'
         octx.lineJoin = 'round'
         octx.stroke()
@@ -807,6 +823,24 @@ export function CanvasView() {
     }
     if (event.button === 2) return
 
+    if (s.tool === 'extrude') {
+      const hit = hitTest(s.page, point, tolerance(), s.doc, true)
+      const directVector = hit?.object.kind === 'vector' ? hit.object : null
+      if (directVector && !s.selection.includes(directVector.id)) store.select([directVector.id], event.shiftKey)
+      const activeState = useStore.getState()
+      const target = directVector ?? activeState.selectedObjects().find((o): o is VectorObject => o.kind === 'vector')
+      if (!target) {
+        store.toast('info', 'Select a vector object to extrude')
+        return
+      }
+      const bounds = objectBounds(target, s.doc)
+      const start = bounds ? { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 } : point
+      dragRef.current = { kind: 'extrude', start, pointerStart: point, current: point, targetId: target.id }
+      store.setStatus('Drag from the object centre to set extrusion depth and direction')
+      scheduleDraw()
+      return
+    }
+
     const selected = collectObjects(s.doc, s.selection)
     const bounds = selected.length ? selectionBounds(selected, s.doc) : null
     const handle = bounds ? handleAt(screen, bounds) : null
@@ -846,10 +880,21 @@ export function CanvasView() {
         if (object) {
           const clicked = nearestNode(object, point, tolerance() * 1.8)
           if (clicked) {
+            const currentNode = object.path.subpaths[clicked.sub]?.nodes[clicked.index]
+            if (currentNode && event.altKey && clicked.which === 'node') {
+              const nextType = currentNode.type === 'sharp' ? 'smooth' : currentNode.type === 'smooth' ? 'symmetric' : 'sharp'
+              const path = setNodeType(object.path, clicked.sub, clicked.index, nextType)
+              store.commit(`Node ${nextType}`, (d) => updateObjects(d, [object.id], () => ({ ...object, path })))
+              store.setNodeSelection([{ sub: clicked.sub, index: clicked.index }])
+              return
+            }
             const already = s.nodeSelection.some((n) => n.sub === clicked.sub && n.index === clicked.index)
-            store.setNodeSelection(already && event.shiftKey
-              ? s.nodeSelection.filter((n) => !(n.sub === clicked.sub && n.index === clicked.index))
-              : [{ sub: clicked.sub, index: clicked.index }])
+            const nextSelection = event.shiftKey
+              ? already
+                ? s.nodeSelection.filter((n) => !(n.sub === clicked.sub && n.index === clicked.index))
+                : [...s.nodeSelection, { sub: clicked.sub, index: clicked.index }]
+              : [{ sub: clicked.sub, index: clicked.index }]
+            store.setNodeSelection(nextSelection)
             dragRef.current = { kind: 'node', sub: clicked.sub, index: clicked.index, which: clicked.which }
             return
           }
@@ -874,7 +919,7 @@ export function CanvasView() {
       case 'text': case 'table': case 'crop': case 'perspective':
         dragRef.current = { kind: 'create', start: point, current: point, shift: event.shiftKey }
         return
-      case 'freehand': case 'liveSketch': case 'brush': case 'variableOutline': case 'symmetry': case 'bspline':
+      case 'freehand': case 'liveSketch': case 'brush': case 'calligraphy': case 'variableOutline': case 'symmetry': case 'bspline':
         dragRef.current = { kind: 'draw', points: [point], pressures: [event.pressure || 0.6] }
         return
       case 'pen': case 'bezier': case 'polyline':
@@ -886,6 +931,16 @@ export function CanvasView() {
       case 'eraser': case 'knife':
         dragRef.current = { kind: 'distort', last: point, current: point }
         return
+      case 'extrude': {
+        const radians = s.options.extrudeAngle * Math.PI / 180
+        store.applyExtrudeToSelection({
+          dx: Math.cos(radians) * s.options.extrudeDepth,
+          dy: Math.sin(radians) * s.options.extrudeDepth,
+          steps: Math.round(s.options.extrudeSteps),
+        })
+        store.setTool('pick')
+        return
+      }
       case 'transparency': case 'blend': case 'contour': case 'dropShadow': case 'blockShadow': {
         const kindMap: Record<string, string> = { transparency: 'transparency', blend: 'blend', contour: 'contour', dropShadow: 'drop-shadow', blockShadow: 'block-shadow' }
         store.addEffect(kindMap[t] ?? t, 'effect')
@@ -893,7 +948,10 @@ export function CanvasView() {
         return
       }
       case 'envelope': {
-        void applyEnvelopePreset(point)
+        const hit = hitTest(s.page, point, tolerance(), s.doc, true)
+        if (hit?.object.kind === 'vector' && !s.selection.includes(hit.object.id)) store.select([hit.object.id], event.shiftKey)
+        store.applyEnvelopePreset(s.options.envelopePreset)
+        store.setTool('pick')
         return
       }
       case 'perspectiveCorrect': {
@@ -1034,6 +1092,10 @@ export function CanvasView() {
         drag.current = point
         scheduleDraw()
         break
+      case 'extrude':
+        drag.current = point
+        scheduleDraw()
+        break
       case 'draw': {
         const last = drag.points[drag.points.length - 1]
         if (vDist(last, point) * s.view.zoom >= 1.4) {
@@ -1132,6 +1194,24 @@ export function CanvasView() {
         const zoom = Math.min(size.w / rect.w, size.h / rect.h)
         store.setView({ zoom, panX: -rect.x * zoom + (size.w - rect.w * zoom) / 2, panY: -rect.y * zoom + (size.h - rect.h * zoom) / 2 })
       }
+    } else if (drag.kind === 'extrude') {
+      const target = collectObjects(s.doc, [drag.targetId]).find((o): o is VectorObject => o.kind === 'vector')
+      const moved = vDist(drag.pointerStart, point) * s.view.zoom >= 3
+      if (target && moved) {
+        const inverse = matInvert(target.transform)
+        const start = matApply(inverse, drag.start)
+        const end = matApply(inverse, point)
+        const dx = end.x - start.x
+        const dy = end.y - start.y
+        store.applyExtrudeToSelection({ dx, dy, steps: Math.round(s.options.extrudeSteps) })
+      } else {
+        store.applyExtrudeToSelection({
+          dx: Math.cos(s.options.extrudeAngle * Math.PI / 180) * s.options.extrudeDepth,
+          dy: Math.sin(s.options.extrudeAngle * Math.PI / 180) * s.options.extrudeDepth,
+          steps: Math.round(s.options.extrudeSteps),
+        })
+      }
+      store.setStatus('Extrusion applied — adjust depth, direction and bands in the Extrude docker')
     } else if (drag.kind === 'draw') {
       finishStroke(drag.points, drag.pressures)
     } else if (drag.kind === 'photo') {
@@ -1450,6 +1530,25 @@ export function CanvasView() {
       store.addObjectsToActiveLayer([object], 'Brush stroke')
       return
     }
+    if (t === 'calligraphy') {
+      const outline = calligraphyOutline(
+        path,
+        opts.calligraphyNibWidth,
+        opts.calligraphyNibAngle,
+        opts.calligraphyMinWidth,
+        opts.calligraphyPressure ? pressures : [],
+      )
+      if (!outline.subpaths.length) return
+      const object = createVector({
+        path: outline,
+        primitive: { type: 'freehand' },
+        fill: { type: 'uniform', color: store.strokeColor },
+        stroke: null,
+        name: 'Calligraphy stroke',
+      })
+      store.addObjectsToActiveLayer([object], 'Calligraphy stroke')
+      return
+    }
     if (t === 'variableOutline') {
       const object = createVector({
         path: variableOutline(path, opts.variableWidth, [0.35, 1, 0.7, 1, 0.4]),
@@ -1702,19 +1801,6 @@ export function CanvasView() {
     store.commit('Photo edit', bakeSession(bitmap, photo))
   }
 
-  async function applyEnvelopePreset(point: Vec): Promise<void> {
-    const store = useStore.getState()
-    const s = stateRef.current
-    const objects = collectObjects(s.doc, s.selection).filter((o): o is VectorObject => o.kind === 'vector')
-    if (!objects.length) { store.toast('info', 'Select a curve', 'Envelopes need at least one vector object.'); return }
-    const preset = ENVELOPE_PRESETS[Math.abs(Math.round(point.x + point.y)) % ENVELOPE_PRESETS.length]
-    const envelope = { ...envelopePreset(preset.id), strength: 1 }
-    for (const object of objects) {
-      store.commit('Envelope', (d) => updateObjects(d, [object.id], () => ({ ...object, envelope, path: applyEnvelope(object.path, envelope) })))
-    }
-    store.setTool('pick')
-  }
-
   function sampleCanvas(point: Vec): { r: number; g: number; b: number; a: number } | null {
     const ctx = artworkRef.current?.getContext('2d')
     if (!ctx) return null
@@ -1787,6 +1873,20 @@ export function CanvasView() {
     const { doc: point } = canvasPoint(event)
     const store = useStore.getState()
     const s = stateRef.current
+    if (s.tool === 'shape') {
+      const selectedVector = collectObjects(s.doc, s.selection).find((o): o is VectorObject => o.kind === 'vector')
+      const clicked = selectedVector ? nearestNode(selectedVector, point, tolerance() * 1.8) : null
+      if (selectedVector && clicked?.which === 'node') {
+        const current = selectedVector.path.subpaths[clicked.sub]?.nodes[clicked.index]
+        if (current) {
+          const nextType = current.type === 'sharp' ? 'smooth' : current.type === 'smooth' ? 'symmetric' : 'sharp'
+          const path = setNodeType(selectedVector.path, clicked.sub, clicked.index, nextType)
+          store.commit(`Node ${nextType}`, (d) => updateObjects(d, [selectedVector.id], () => ({ ...selectedVector, path })))
+          store.setNodeSelection([{ sub: clicked.sub, index: clicked.index }])
+          return
+        }
+      }
+    }
     const hit = hitTest(s.page, point, tolerance(), s.doc, true)
     if (!hit) return
     if (hit.object.kind === 'text') {
@@ -1836,19 +1936,6 @@ export function CanvasView() {
         return
       }
       if (event.key === 'Enter' && penRef.current) { penRef.current = null; dragRef.current = null; return }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && !event.ctrlKey && !event.metaKey) {
-        const object = collectObjects(stateRef.current.doc, store.selection).find((o): o is VectorObject => o.kind === 'vector')
-        if (object && store.nodeSelection.length) {
-          let path = object.path
-          for (const entry of [...store.nodeSelection].sort((a, b) => b.index - a.index)) {
-            if ((path.subpaths[entry.sub]?.nodes.length ?? 0) > 2) path = deleteNode(path, entry.sub, entry.index)
-          }
-          store.commit('Delete nodes', (d) => updateObjects(d, [object.id], () => ({ ...object, path })))
-          store.setNodeSelection([])
-        } else if (store.selection.length) {
-          store.deleteSelection()
-        }
-      }
     }
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code === 'Space') { spaceRef.current = false; setPanning(false) }
@@ -2068,7 +2155,7 @@ function titleCase(value: string): string {
 function cursorFor(tool: string): string {
   if (tool === 'pan') return 'grab'
   if (tool === 'zoom') return 'zoom-in'
-  if (['pen', 'bezier', 'polyline', 'freehand', 'brush', 'liveSketch', 'line2', 'curve3', 'variableOutline', 'symmetry', 'rectangle', 'ellipse', 'polygon', 'star', 'complexStar', 'graphPaper', 'spiral', 'crop', 'text', 'table', 'rect3', 'ellipse3', 'bspline'].includes(tool)) return 'crosshair'
+  if (['pen', 'bezier', 'polyline', 'freehand', 'brush', 'calligraphy', 'liveSketch', 'line2', 'curve3', 'variableOutline', 'symmetry', 'rectangle', 'ellipse', 'polygon', 'star', 'complexStar', 'graphPaper', 'spiral', 'crop', 'text', 'table', 'rect3', 'ellipse3', 'bspline'].includes(tool)) return 'crosshair'
   if (['smudge', 'roughen', 'twirl', 'attract', 'repel', 'smear', 'liquify', 'clone', 'maskBrush', 'cutout', 'bgRemove', 'blurBrush', 'sharpenBrush', 'dodgeBrush', 'burnBrush', 'enhance', 'colorReplace'].includes(tool)) return 'none'
   return 'default'
 }

@@ -9,6 +9,7 @@ import { setToolOptions, useToolOptions } from './toolOptions'
 import { Button, Check, ColorSwatch, IconButton, NumberField, Popover, Select, Slider } from './widgets'
 import { Icon } from './icons'
 import { BRUSH_PRESETS } from '../engine/brush'
+import { ENVELOPE_PRESETS } from '../engine/shapes'
 import { fonts } from '../lib/text'
 import { hex, css } from '../lib/color'
 import { unitLabel } from '../lib/util'
@@ -275,8 +276,14 @@ export function PropertyBar() {
         </div>
       ) : null}
 
-      {['contour', 'dropShadow', 'blockShadow', 'blend', 'envelope', 'perspective', 'transparency', 'blockShadow'].includes(tool) ? (
+      {['contour', 'dropShadow', 'blockShadow', 'blend', 'envelope', 'perspective', 'transparency'].includes(tool) ? (
         <div className="prop-group">
+          {tool === 'envelope' ? (
+            <>
+              <span className="prop-label">Preset</span>
+              <Select value={options.envelopePreset} width={150} onChange={(v) => setToolOptions({ envelopePreset: v })} options={ENVELOPE_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }))} />
+            </>
+          ) : null}
           {tool === 'contour' ? (
             <>
               <span className="prop-label">Steps</span>
@@ -303,11 +310,14 @@ export function PropertyBar() {
               <Select value={options.blendMode} width={120} onChange={(v) => setToolOptions({ blendMode: v })} options={['normal', 'multiply', 'overlay'].map((v) => ({ value: v, label: v }))} />
             </>
           ) : null}
-          <Button small disabled={!selection.length} onClick={() => {
-            const kinds: Record<string, string> = { contour: 'contour', dropShadow: 'drop-shadow', blockShadow: 'block-shadow', blend: 'blend', envelope: 'envelope', perspective: 'perspective', transparency: 'transparency' }
-            useStore.getState().addEffect(kinds[tool] ?? tool, 'effect')
-          }}>Apply to selection</Button>
-          <span className="tiny">Live previews stay editable in the Effects docker.</span>
+          <Button small disabled={tool === 'envelope' ? !hasVector : !selection.length} onClick={() => {
+            if (tool === 'envelope') useStore.getState().applyEnvelopePreset(options.envelopePreset)
+            else {
+              const kinds: Record<string, string> = { contour: 'contour', dropShadow: 'drop-shadow', blockShadow: 'block-shadow', blend: 'blend', perspective: 'perspective', transparency: 'transparency' }
+              useStore.getState().addEffect(kinds[tool] ?? tool, 'effect')
+            }
+          }}>{tool === 'envelope' ? 'Apply envelope' : 'Apply to selection'}</Button>
+          <span className="tiny">{tool === 'envelope' ? 'Preset is a live, non-destructive envelope; edit or remove it in Shaping.' : 'Live previews stay editable in the Effects docker.'}</span>
         </div>
       ) : null}
 

@@ -8,16 +8,18 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type {
-  BrushStroke, Document, Fill, ID, Layer, Page, RGBA, SceneObject, Stroke, TextStyle, ViewState, Effect, Adjustment,
+  BrushStroke, Document, Fill, ID, Layer, Page, PathData, RGBA, SceneObject, Stroke, TextObject, TextStyle, ViewState, Effect, Adjustment, VectorObject, ExtrudeSettings,
 } from '../types'
 import type { ToolID } from '../tools/registry'
-import { objectBounds } from '../engine/render'
+import { objectBounds, textLayoutOf } from '../engine/render'
+import { combinePaths } from '../engine/boolean'
+import { breakApart, closeOpenSubpaths, deleteNode, envelopePreset, joinSubpaths, reverseSubpath, setNodeType, setSegmentCurve, splitSubpathAtNode, transformPath } from '../engine/shapes'
+import { parseSvgPath, fonts } from '../lib/text'
 import * as M from './mutations'
 import { addColorStyle, createBitmap, createDocument, createGroup, createTextObject, createVector, documentColors, objectCount, updateObject, updatePage } from './mutations'
-import { clamp, uid, rectUnion, type Vec } from '../lib/util'
+import { clamp, uid, rectUnion, matApply, matInvert, matMul, node, pathFromSubpaths, subPath, type Vec } from '../lib/util'
 import { rgb } from '../lib/color'
 import { makeAdjustment, makeEffect } from '../engine/effects'
-import { fonts } from '../lib/text'
 
 export interface DockerState {
   object: boolean
@@ -33,6 +35,8 @@ export interface DockerState {
   history: boolean
   print: boolean
   shaping: boolean
+  extrude: boolean
+  lens: boolean
   symbols: boolean
   comments: boolean
   collab: boolean
@@ -51,6 +55,7 @@ export interface AppState {
   fileHandle: FileSystemFileHandle | null
   history: HistoryEntry[]
   future: HistoryEntry[]
+  lastRepeat: { kind: 'duplicate' } | { kind: 'nudge'; dx: number; dy: number } | null
 
   /* selection & tools */
   tool: ToolID
@@ -74,9 +79,13 @@ export interface AppState {
   toasts: ToastMessage[]
   statusMessage: string
   previewEffects: boolean
-  /** Modal state for the export dialog and the print preview. */
+  /** Modal states for common workspace commands. */
   exportDialog: boolean
   printDialog: boolean
+  fillDialog: 'uniform' | 'fountain' | null
+  outlineDialog: boolean
+  settingsDialog: boolean
+  shortcutsDialog: boolean
   installPrompt: unknown | null
 
   /* actions */
@@ -104,6 +113,10 @@ export interface AppState {
   setPreviewEffects: (on: boolean) => void
   setExportDialog: (open: boolean) => void
   setPrintDialog: (open: boolean) => void
+  setFillDialog: (mode: 'uniform' | 'fountain' | null) => void
+  setOutlineDialog: (open: boolean) => void
+  setSettingsDialog: (open: boolean) => void
+  setShortcutsDialog: (open: boolean) => void
   setInstallPrompt: (event: unknown | null) => void
 
   /* document commands */
@@ -126,12 +139,28 @@ export interface AppState {
   addEffect: (kind: string, type: 'effect' | 'adjustment') => void
   deleteSelection: () => void
   duplicateSelection: () => void
+  repeatLast: () => void
+  lockSelection: () => void
   groupSelection: () => void
   ungroupSelection: () => void
+  combineSelection: () => void
+  breakApartSelection: () => void
+  convertSelectionToCurves: () => Promise<void>
+  reorderSelection: (direction: 'front' | 'back' | 'forward' | 'backward') => void
+  applyNodeType: (type: 'sharp' | 'smooth' | 'symmetric') => void
+  deleteNodeSelection: () => void
+  closeSelectedCurves: () => void
+  joinSelectedCurves: () => void
+  reverseSelectedCurves: () => void
+  breakSelectedCurve: () => void
+  setSelectedSegmentsCurve: (curved: boolean) => void
   nudgeSelection: (dx: number, dy: number) => void
   alignSelection: (mode: 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom' | 'hdistribute' | 'vdistribute') => void
   applyFillToSelection: (fill: Fill) => void
   applyStrokeToSelection: (patch: Partial<Stroke>) => void
+  applyExtrudeToSelection: (settings?: Partial<ExtrudeSettings>) => void
+  applyEnvelopePreset: (preset: string) => void
+  removeEnvelope: () => void
   applyTextStyle: (patch: Partial<TextStyle>) => void
   addPage: () => void
   deletePage: (id: ID) => void
@@ -152,6 +181,7 @@ export const useStore = create<AppState>()(
     fileHandle: null,
     history: [],
     future: [],
+    lastRepeat: null,
 
     tool: 'pick',
     previousTool: 'pick',
@@ -175,11 +205,13 @@ export const useStore = create<AppState>()(
       showRulers: true,
       showPageShadow: true,
       wireframe: false,
+      displayMode: 'enhanced',
+      fullScreenPreview: false,
     },
     dockers: {
       object: true, color: true, layers: true, pages: false, effects: false,
       adjustments: false, masking: false, retouch: false, text: false, brush: false,
-      history: false, print: false, shaping: false, symbols: false,
+      history: false, print: false, shaping: false, extrude: false, lens: false, symbols: false,
       comments: false, collab: false,
     },
     theme: (typeof localStorage !== 'undefined' && (localStorage.getItem('corelbydre.theme') as 'dark' | 'light')) || 'dark',
@@ -189,6 +221,10 @@ export const useStore = create<AppState>()(
     previewEffects: true,
     exportDialog: false,
     printDialog: false,
+    fillDialog: null,
+    outlineDialog: false,
+    settingsDialog: false,
+    shortcutsDialog: false,
     installPrompt: null,
 
     /* ------------------------------------------------------------ actions -- */
@@ -254,6 +290,10 @@ export const useStore = create<AppState>()(
     setPreviewEffects: (previewEffects) => set({ previewEffects }),
     setExportDialog: (exportDialog) => set({ exportDialog }),
     setPrintDialog: (printDialog) => set({ printDialog }),
+    setFillDialog: (fillDialog) => set({ fillDialog }),
+    setOutlineDialog: (outlineDialog) => set({ outlineDialog }),
+    setSettingsDialog: (settingsDialog) => set({ settingsDialog }),
+    setShortcutsDialog: (shortcutsDialog) => set({ shortcutsDialog }),
     setInstallPrompt: (installPrompt) => set({ installPrompt }),
 
     commit: (label, updater, options) => set((s) => {
@@ -274,6 +314,7 @@ export const useStore = create<AppState>()(
       doc,
       history: [],
       future: [],
+      lastRepeat: null,
       selection: [],
       nodeSelection: [],
       activeLayerId: doc.pages.find((p) => p.id === doc.activePageId)?.layers[0]?.id ?? '',
@@ -410,6 +451,25 @@ export const useStore = create<AppState>()(
       if (!layer) return
       const result = M.duplicateObjects(state.doc, page.id, layer.id, state.selection, state.doc.settings.duplicateOffset)
       state.commit('Duplicate', () => result.doc, { selection: result.newIds })
+      set({ lastRepeat: { kind: 'duplicate' } })
+    },
+
+    repeatLast: () => {
+      const state = get()
+      if (!state.lastRepeat) {
+        state.toast('info', 'Nothing to repeat', 'Duplicate or nudge an object, then use Ctrl+R to repeat that action.')
+        return
+      }
+      if (state.lastRepeat.kind === 'duplicate') state.duplicateSelection()
+      else state.nudgeSelection(state.lastRepeat.dx, state.lastRepeat.dy)
+    },
+
+    lockSelection: () => {
+      const state = get()
+      const objects = state.selectedObjects()
+      if (!objects.length) return
+      const lock = !objects.every((o) => o.locked)
+      state.commit(lock ? 'Lock objects' : 'Unlock objects', (doc) => M.updateObjects(doc, objects.map((o) => o.id), (o) => ({ ...o, locked: lock })))
     },
 
     groupSelection: () => {
@@ -458,6 +518,227 @@ export const useStore = create<AppState>()(
       state.commit('Ungroup', () => doc, { selection: released })
     },
 
+    combineSelection: () => {
+      const state = get()
+      const vectors = state.selectedObjects().filter((o): o is VectorObject => o.kind === 'vector')
+      if (vectors.length < 2) {
+        state.toast('info', 'Combine needs at least two vector objects')
+        return
+      }
+      const layerIds = new Set(vectors.map((o) => state.layerOf(o.id)?.id).filter(Boolean))
+      if (layerIds.size !== 1) {
+        state.toast('warn', 'Combine objects on the same layer', 'Move the selected curves to one layer first.')
+        return
+      }
+      const first = vectors[0]
+      const inverse = matInvert(first.transform)
+      const paths = vectors.map((o) => transformPath(o.path, matMul(inverse, o.transform)))
+      const combined = combinePaths(paths)
+      let next = M.updateObject(state.doc, first.id, (o) => o.kind === 'vector'
+        ? { ...o, path: combined, primitive: { type: 'freehand' } }
+        : o)
+      next = M.removeObjects(next, vectors.slice(1).map((o) => o.id)).doc
+      state.commit('Combine', () => next, { selection: [first.id] })
+    },
+
+    breakApartSelection: () => {
+      const state = get()
+      const vectors = state.selectedObjects().filter((o): o is VectorObject => o.kind === 'vector' && o.path.subpaths.length > 1)
+      if (!vectors.length) {
+        state.toast('info', 'Select a curve with multiple subpaths to break apart')
+        return
+      }
+      const layer = state.layerOf(vectors[0].id)
+      const page = state.activePage()
+      if (!layer || vectors.some((o) => state.layerOf(o.id)?.id !== layer.id)) {
+        state.toast('warn', 'Break Apart works on one layer at a time')
+        return
+      }
+      const indexed = vectors.map((obj) => ({ obj, index: layer.objects.findIndex((o) => o.id === obj.id) })).sort((a, b) => b.index - a.index)
+      let next = state.doc
+      const newSelection: ID[] = []
+      for (const { obj, index } of indexed) {
+        const paths = breakApart(obj.path)
+        const pieces = paths.map((path, i) => i === 0
+          ? { ...obj, path, primitive: { type: 'freehand' as const } }
+          : createVector({ ...obj, id: uid('obj'), name: `${obj.name} ${i + 1}`, path, primitive: { type: 'freehand' } }))
+        next = M.removeObjects(next, [obj.id]).doc
+        next = M.addObjects(next, page.id, layer.id, pieces as SceneObject[], index)
+        newSelection.unshift(...pieces.map((piece) => piece.id))
+      }
+      state.commit('Break Apart', () => next, { selection: newSelection })
+    },
+
+    convertSelectionToCurves: async () => {
+      const state = get()
+      const selected = state.selectedObjects()
+      const texts = selected.filter((o): o is TextObject => o.kind === 'text')
+      const vectors = selected.filter((o): o is VectorObject => o.kind === 'vector' && o.primitive.type !== 'freehand')
+      if (!texts.length && !vectors.length) {
+        state.toast('info', 'Nothing to convert', 'Select text or a parametric shape first.')
+        return
+      }
+      const converted = new Map<ID, VectorObject>()
+      for (const text of texts) {
+        if (!fonts.hasOutlines(text.style.fontFamily)) await fonts.load(text.style.fontFamily)
+        if (!fonts.hasOutlines(text.style.fontFamily)) {
+          state.toast('warn', `No outline data for ${text.style.fontFamily}`, 'Choose a loaded outline-capable font or embed the font before converting text.')
+          continue
+        }
+        const layout = textLayoutOf(text, state.doc)
+        const units = fonts.unitsPerEm(text.style.fontFamily)
+        const subpaths = [] as PathData['subpaths']
+        for (const line of layout.lines) {
+          for (const glyph of line.glyphs) {
+            if (!glyph.d || glyph.char === ' ') continue
+            const scale = glyph.size / units
+            const angle = (glyph as typeof glyph & { angle?: number }).angle ?? 0
+            const cos = Math.cos(angle)
+            const sin = Math.sin(angle)
+            const parsed = parseSvgPath(glyph.d)
+            for (const ring of parsed) {
+              if (ring.length < 3) continue
+              const nodes = ring.map((pt) => {
+                const px = pt.x * scale
+                const py = -pt.y * scale
+                let x = glyph.x + px * cos - py * sin
+                let y = (text.onPathId ? glyph.y : line.baseline) + px * sin + py * cos
+                if (!text.onPathId) { x += text.frame.x; y += text.frame.y }
+                return node(x, y)
+              })
+              subpaths.push(subPath(nodes, true))
+            }
+          }
+        }
+        if (!subpaths.length) {
+          state.toast('warn', `Could not outline ${text.name}`, 'The selected font returned no glyph outlines.')
+          continue
+        }
+        const vector = createVector({
+          id: text.id,
+          name: `${text.name} (curves)`,
+          transform: text.transform,
+          opacity: text.opacity,
+          blend: text.blend,
+          locked: text.locked,
+          visible: text.visible,
+          printable: text.printable,
+          effects: text.effects,
+          styleRef: text.styleRef,
+          path: pathFromSubpaths(subpaths),
+          primitive: { type: 'freehand' },
+          fill: { type: 'uniform', color: text.style.color },
+          stroke: text.style.outline ?? null,
+        })
+        converted.set(text.id, vector)
+      }
+      const ids = [...converted.keys(), ...vectors.map((o) => o.id)]
+      if (!ids.length) return
+      state.commit('Convert to curves', (doc) => {
+        let next = doc
+        for (const [id, object] of converted) next = M.updateObject(next, id, () => object)
+        for (const vector of vectors) next = M.updateObject(next, vector.id, (o) => o.kind === 'vector' ? { ...o, primitive: { type: 'freehand' } } : o)
+        return next
+      }, { selection: ids })
+      state.toast('success', 'Converted to curves', `${ids.length} object(s) can now be edited node by node.`)
+    },
+
+    reorderSelection: (direction) => {
+      const state = get()
+      const page = state.activePage()
+      const layer = state.layerOf(state.selection[0])
+      if (!layer || !state.selection.length) return
+      const selected = new Set(state.selection)
+      let objects = [...layer.objects]
+      if (direction === 'front') objects = [...objects.filter((o) => !selected.has(o.id)), ...objects.filter((o) => selected.has(o.id))]
+      else if (direction === 'back') objects = [...objects.filter((o) => selected.has(o.id)), ...objects.filter((o) => !selected.has(o.id))]
+      else if (direction === 'forward') {
+        for (let i = objects.length - 2; i >= 0; i--) if (selected.has(objects[i].id) && !selected.has(objects[i + 1].id)) [objects[i], objects[i + 1]] = [objects[i + 1], objects[i]]
+      } else {
+        for (let i = 1; i < objects.length; i++) if (selected.has(objects[i].id) && !selected.has(objects[i - 1].id)) [objects[i], objects[i - 1]] = [objects[i - 1], objects[i]]
+      }
+      if (objects.every((o, i) => o === layer.objects[i])) return
+      state.commit(`Order ${direction}`, (doc) => M.updateLayer(doc, page.id, layer.id, (l) => ({ ...l, objects })))
+    },
+
+    applyNodeType: (type) => {
+      const state = get()
+      const object = state.selectedObjects().find((o): o is VectorObject => o.kind === 'vector')
+      if (!object || !state.nodeSelection.length) return
+      const path = state.nodeSelection.reduce((next, entry) => setNodeType(next, entry.sub, entry.index, type), object.path)
+      state.commit(`Node ${type}`, (doc) => M.updateObject(doc, object.id, (o) => o.kind === 'vector' ? { ...o, path } : o))
+    },
+
+    deleteNodeSelection: () => {
+      const state = get()
+      const object = state.selectedObjects().find((o): o is VectorObject => o.kind === 'vector')
+      if (!object || !state.nodeSelection.length) return
+      let path = object.path
+      const selected = [...state.nodeSelection].sort((a, b) => b.sub - a.sub || b.index - a.index)
+      for (const entry of selected) path = deleteNode(path, entry.sub, entry.index)
+      if (path === object.path) {
+        state.toast('info', 'At least two nodes are required to keep a path open')
+        return
+      }
+      state.commit('Delete nodes', (doc) => M.updateObject(doc, object.id, (o) => o.kind === 'vector' ? { ...o, path } : o))
+      set({ nodeSelection: [] })
+    },
+
+    closeSelectedCurves: () => {
+      const state = get()
+      const object = state.selectedObjects().find((o): o is VectorObject => o.kind === 'vector')
+      if (!object) return
+      const path = closeOpenSubpaths(object.path)
+      if (path === object.path || path.subpaths.every((s, i) => s.closed === object.path.subpaths[i]?.closed)) return
+      state.commit('Close curve', (doc) => M.updateObject(doc, object.id, (o) => o.kind === 'vector' ? { ...o, path } : o))
+    },
+
+    joinSelectedCurves: () => {
+      const state = get()
+      const object = state.selectedObjects().find((o): o is VectorObject => o.kind === 'vector')
+      if (!object) return
+      const path = joinSubpaths(object.path, state.doc.settings.snapTolerance)
+      if (path.subpaths.length === object.path.subpaths.length) {
+        state.toast('info', 'No endpoints within the join tolerance')
+        return
+      }
+      state.commit('Join curves', (doc) => M.updateObject(doc, object.id, (o) => o.kind === 'vector' ? { ...o, path } : o))
+    },
+
+    reverseSelectedCurves: () => {
+      const state = get()
+      const object = state.selectedObjects().find((o): o is VectorObject => o.kind === 'vector')
+      if (!object) return
+      const selectedSubs = new Set(state.nodeSelection.map((n) => n.sub))
+      const subs = selectedSubs.size ? [...selectedSubs] : object.path.subpaths.map((_, i) => i)
+      const path = subs.reduce((next, sub) => reverseSubpath(next, sub), object.path)
+      state.commit('Reverse curve direction', (doc) => M.updateObject(doc, object.id, (o) => o.kind === 'vector' ? { ...o, path } : o))
+    },
+
+    breakSelectedCurve: () => {
+      const state = get()
+      const object = state.selectedObjects().find((o): o is VectorObject => o.kind === 'vector')
+      const entry = state.nodeSelection[0]
+      if (!object || !entry) {
+        state.toast('info', 'Select a node to break the curve')
+        return
+      }
+      const path = splitSubpathAtNode(object.path, entry.sub, entry.index)
+      if (path === object.path) {
+        state.toast('info', 'Select an interior node on an open curve')
+        return
+      }
+      state.commit('Break curve', (doc) => M.updateObject(doc, object.id, (o) => o.kind === 'vector' ? { ...o, path } : o))
+    },
+
+    setSelectedSegmentsCurve: (curved) => {
+      const state = get()
+      const object = state.selectedObjects().find((o): o is VectorObject => o.kind === 'vector')
+      if (!object || !state.nodeSelection.length) return
+      const path = state.nodeSelection.reduce((next, entry) => setSegmentCurve(next, entry.sub, entry.index, curved), object.path)
+      state.commit(curved ? 'Convert segment to curve' : 'Convert segment to line', (doc) => M.updateObject(doc, object.id, (o) => o.kind === 'vector' ? { ...o, path } : o))
+    },
+
     nudgeSelection: (dx, dy) => {
       const state = get()
       if (!state.selection.length) return
@@ -465,6 +746,7 @@ export const useStore = create<AppState>()(
         ...o,
         transform: { ...o.transform, e: o.transform.e + dx, f: o.transform.f + dy },
       })))
+      set({ lastRepeat: { kind: 'nudge', dx, dy } })
     },
 
     alignSelection: (mode) => {
@@ -533,6 +815,38 @@ export const useStore = create<AppState>()(
         }
         return { ...o, stroke: { ...base, ...patch } }
       }))
+    },
+
+    applyExtrudeToSelection: (patch = {}) => {
+      const state = get()
+      const vectors = state.selectedObjects().filter((o): o is VectorObject => o.kind === 'vector')
+      if (!vectors.length) {
+        state.toast('info', 'Select a vector object to extrude')
+        return
+      }
+      const defaults: ExtrudeSettings = { dx: 24, dy: 20, steps: 8, color: rgb(58, 68, 82), showLines: false, fade: true }
+      state.commit('Extrude', (doc) => M.updateObjects(doc, vectors.map((o) => o.id), (o) => o.kind === 'vector'
+        ? { ...o, extrude: { ...defaults, ...o.extrude, ...patch } }
+        : o))
+      state.setDocker('extrude', true)
+    },
+
+    applyEnvelopePreset: (preset) => {
+      const state = get()
+      const vectors = state.selectedObjects().filter((o): o is VectorObject => o.kind === 'vector')
+      if (!vectors.length) {
+        state.toast('info', 'Select a vector object for an envelope')
+        return
+      }
+      const envelope = envelopePreset(preset)
+      state.commit('Apply envelope', (doc) => M.updateObjects(doc, vectors.map((o) => o.id), (o) => o.kind === 'vector' ? { ...o, envelope } : o))
+    },
+
+    removeEnvelope: () => {
+      const state = get()
+      const ids = state.selectedObjects().filter((o): o is VectorObject => o.kind === 'vector' && !!o.envelope).map((o) => o.id)
+      if (!ids.length) return
+      state.commit('Remove envelope', (doc) => M.updateObjects(doc, ids, (o) => o.kind === 'vector' ? { ...o, envelope: undefined } : o))
     },
 
     applyTextStyle: (patch) => {

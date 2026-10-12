@@ -86,6 +86,8 @@ export interface PostScriptFill { type: 'postscript'; preset: string; fg: RGBA; 
 export type Fill = { type: 'none' } | { type: 'uniform'; color: RGBA }
   | FountainFill | MeshFill | PatternFill | TextureFill | PostScriptFill
 
+export type ArrowheadStyle = 'none' | 'triangle' | 'stealth' | 'diamond' | 'open' | 'circle' | 'bar'
+
 export interface Stroke {
   color: RGBA
   width: number
@@ -95,8 +97,29 @@ export interface Stroke {
   dash?: number[]
   /** Variable outline width profile (normalised 0..1 across the path). */
   profile?: number[]
+  /** Start/end markers are drawn only on open subpaths. */
+  startArrow?: ArrowheadStyle
+  endArrow?: ArrowheadStyle
+  /** Marker length multiplier; defaults to 1 for files written before arrows existed. */
+  arrowScale?: number
+  /** False keeps the outline's visual width stable when the object is scaled. */
+  scaleWithObject?: boolean
   behind: boolean
 }
+
+export interface ExtrudeSettings {
+  /** Offset from the front face to the extrusion end, in object-local document units. */
+  dx: number
+  dy: number
+  steps: number
+  color: RGBA
+  /** Draw contour bands through the extrusion. */
+  showLines: boolean
+  /** Shade each band toward the back face. */
+  fade: boolean
+}
+
+export type LensMode = 'fisheye' | 'brighten' | 'tint' | 'grayscale' | 'invert' | 'transparency' | 'wireframe' | 'heatmap'
 
 /* ------------------------------------------------------------ geometry ----- */
 
@@ -210,6 +233,8 @@ export interface VectorObject extends ObjectBase {
   stroke: Stroke | null
   /** Painterly brush: the stroke is rendered with a media engine instead of a flat line. */
   brush?: BrushStroke
+  /** Live vector extrusion; the source path remains editable. */
+  extrude?: ExtrudeSettings
   /** Envelope distortion applied to the rendered path (non-destructive). */
   envelope?: Envelope
   /** Perspective drawing guides baked into the object's path. */
@@ -436,6 +461,8 @@ export interface TransformState {
   originY: number
 }
 
+export type DisplayMode = 'enhanced' | 'simple-wireframe' | 'wireframe' | 'draft'
+
 export interface ViewState {
   zoom: number
   panX: number
@@ -444,6 +471,9 @@ export interface ViewState {
   showGuides: boolean
   showRulers: boolean
   showPageShadow: boolean
+  /** Legacy toggle retained for restored documents and the status bar. */
   wireframe: boolean
+  displayMode: DisplayMode
+  fullScreenPreview: boolean
   snapPreview?: { x?: number[]; y?: number[] }
 }

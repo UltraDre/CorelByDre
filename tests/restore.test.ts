@@ -80,4 +80,15 @@ describe('restoreLastSession', () => {
     expect(page).toBeTruthy()
     expect(page.layers.length).toBeGreaterThan(0)
   })
+
+  it('normalizes legacy or malformed autosaved documents so the workspace never crashes on restore', async () => {
+    storedPayload = JSON.stringify({ id: 'legacy-1', name: 'Legacy broken doc', pages: [] })
+    const restored = await restoreLastSession()
+    expect(restored).toBe(true)
+    const doc = useStore.getState().doc
+    expect(doc.pages.length).toBe(1)
+    expect(doc.pages[0].layers.length).toBe(1)
+    expect(doc.settings.displayUnit).toBe('pt')
+    expect(doc.settings.nudgeStep).toBeGreaterThan(0)
+  })
 })

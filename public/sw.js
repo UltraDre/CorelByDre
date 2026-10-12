@@ -8,7 +8,7 @@
  *  - API / sync endpoints   : network-only, with an offline queue drained by Background Sync.
  */
 
-const VERSION = 'v1.0.0'
+const VERSION = 'v1.0.2'
 const SHELL_CACHE = `corelbydre-shell-${VERSION}`
 const RUNTIME_CACHE = `corelbydre-runtime-${VERSION}`
 const FONT_CACHE = `corelbydre-fonts-${VERSION}`
@@ -110,33 +110,42 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url)
 
-  // Navigations: network-first so deploys are picked up, cached shell for offline.
+  // Never cache the service worker script itself or the sync API.
+  if (url.pathname.endsWith('/sw.js') || url.pathname.startsWith('/api/sync')) return
+
+  // Navigations: network-first (bypassing stale HTTP cache) so deploys are picked
+  // up immediately, falling back to the cached shell when offline or if a legacy
+  // branch build briefly serves an unbuilt index.html.
   if (request.mode === 'navigate') {
     event.respondWith(
       (async () => {
+        const cache = await caches.open(SHELL_CACHE)
         try {
-          const preload = await event.preloadResponse
-          if (preload) return preload
-          const fresh = await fetch(request)
-          const cache = await caches.open(SHELL_CACHE)
-          cache.put(scopedUrl('index.html'), fresh.clone())
-          return fresh
+          const fresh = (await fetch(request, { cache: 'no-cache' })) || (await event.preloadResponse)
+          if (fresh && fresh.ok) {
+            const text = await fresh.clone().text()
+            const isUnbuiltSource = text.includes('/src/main.tsx')
+            if (!isUnbuiltSource) {
+              await cache.put(scopedUrl('index.html'), fresh.clone())
+              return fresh
+            }
+            const fallback = (await cache.match(scopedUrl('index.html'))) || (await cache.match(scopedUrl('')))
+            if (fallback) return fallback
+            return fresh
+          }
         } catch {
-          const cache = await caches.open(SHELL_CACHE)
-          return (
-            (await cache.match(scopedUrl('index.html'))) ||
-            (await cache.match(scopedUrl(''))) ||
-            (await caches.match(scopedUrl('offline.html'))) ||
-            new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } })
-          )
+          /* network unavailable — fall back to cached shell */
         }
+        return (
+          (await cache.match(scopedUrl('index.html'))) ||
+          (await cache.match(scopedUrl(''))) ||
+          (await caches.match(scopedUrl('offline.html'))) ||
+          new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } })
+        )
       })(),
     )
     return
   }
-
-  // Never cache the sync API — that traffic is handled by the offline queue.
-  if (url.pathname.startsWith('/api/sync')) return
 
   event.respondWith(
     (async () => {

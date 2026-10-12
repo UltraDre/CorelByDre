@@ -99,6 +99,119 @@ export function createDocument(name = 'Untitled-1', preset?: typeof PAGE_PRESETS
   }
 }
 
+function normalizeSceneObject(raw: SceneObject): SceneObject {
+  const transform = raw.transform && typeof raw.transform === 'object'
+    ? {
+        a: Number.isFinite(raw.transform.a) ? raw.transform.a : 1,
+        b: Number.isFinite(raw.transform.b) ? raw.transform.b : 0,
+        c: Number.isFinite(raw.transform.c) ? raw.transform.c : 0,
+        d: Number.isFinite(raw.transform.d) ? raw.transform.d : 1,
+        e: Number.isFinite(raw.transform.e) ? raw.transform.e : 0,
+        f: Number.isFinite(raw.transform.f) ? raw.transform.f : 0,
+      }
+    : { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
+  const effects = Array.isArray(raw.effects) ? raw.effects : []
+  if (raw.kind === 'vector') {
+    const stroke: Stroke | null = raw.stroke && typeof raw.stroke === 'object'
+      ? {
+          ...raw.stroke,
+          color: raw.stroke.color ?? rgb(24, 26, 30),
+          width: Number.isFinite(raw.stroke.width) ? raw.stroke.width : 1,
+          cap: raw.stroke.cap ?? 'butt',
+          join: raw.stroke.join ?? 'miter',
+          miterLimit: Number.isFinite(raw.stroke.miterLimit) ? raw.stroke.miterLimit : 10,
+          behind: Boolean(raw.stroke.behind),
+        }
+      : null
+    const path: PathData = raw.path && Array.isArray(raw.path.subpaths)
+      ? raw.path
+      : { subpaths: [], fillRule: 'nonzero' }
+    if (
+      transform.a === raw.transform?.a && transform.b === raw.transform?.b &&
+      transform.c === raw.transform?.c && transform.d === raw.transform?.d &&
+      transform.e === raw.transform?.e && transform.f === raw.transform?.f &&
+      effects === raw.effects && path === raw.path && raw.primitive && raw.fill &&
+      (!raw.stroke || Number.isFinite(raw.stroke.miterLimit))
+    ) {
+      return raw
+    }
+    return {
+      ...raw,
+      transform,
+      effects,
+      path,
+      primitive: raw.primitive ?? { type: 'freehand' },
+      fill: raw.fill ?? { type: 'none' },
+      stroke,
+    }
+  }
+  if (raw.kind === 'group') {
+    const children = Array.isArray(raw.children) ? raw.children.map(normalizeSceneObject) : []
+    return children === raw.children && effects === raw.effects ? raw : { ...raw, transform, effects, children }
+  }
+  return effects === raw.effects ? raw : { ...raw, transform, effects }
+}
+
+/**
+ * Ensure any document loaded from storage or imported JSON has at least one
+ * valid page, one layer per page, complete settings and valid object defaults.
+ */
+export function normalizeDocument(input: unknown): Document {
+  if (!input || typeof input !== 'object') return createDocument()
+  const raw = input as Partial<Document>
+  const fallback = createDocument(typeof raw.name === 'string' && raw.name.trim() ? raw.name : 'Untitled-1')
+  const rawPages = Array.isArray(raw.pages) && raw.pages.length > 0 ? raw.pages : fallback.pages
+  const pages: Page[] = rawPages.map((p, index) => {
+    const defaultPage = fallback.pages[0]
+    if (!p || typeof p !== 'object') return createPage(`Page ${index + 1}`, defaultPage.size.w, defaultPage.size.h, defaultPage.size.unit)
+    const w = Number.isFinite(p.size?.w) && p.size.w > 0 ? p.size.w : defaultPage.size.w
+    const h = Number.isFinite(p.size?.h) && p.size.h > 0 ? p.size.h : defaultPage.size.h
+    const unit = p.size?.unit ?? defaultPage.size.unit
+    const rawLayers = Array.isArray(p.layers) && p.layers.length > 0 ? p.layers : [createLayer('Layer 1')]
+    const layers: Layer[] = rawLayers.map((l, li) => {
+      if (!l || typeof l !== 'object') return createLayer(`Layer ${li + 1}`)
+      const objects = Array.isArray(l.objects) ? l.objects.filter(Boolean).map(normalizeSceneObject) : []
+      return {
+        id: l.id || uid('layer'),
+        name: l.name || `Layer ${li + 1}`,
+        kind: l.kind === 'master' ? 'master' : 'normal',
+        visible: l.visible !== false,
+        locked: Boolean(l.locked),
+        printable: l.printable !== false,
+        opacity: Number.isFinite(l.opacity) ? l.opacity : 1,
+        blend: l.blend ?? 'normal',
+        objects,
+      }
+    })
+    return {
+      id: p.id || uid('page'),
+      name: p.name || `Page ${index + 1}`,
+      size: { w, h, unit, name: p.size?.name ?? `${Math.round(w)} × ${Math.round(h)}` },
+      bleed: Number.isFinite(p.bleed) ? p.bleed : 0,
+      orientation: p.orientation ?? (w > h ? 'landscape' : 'portrait'),
+      background: p.background && typeof p.background === 'object' ? p.background : rgb(255, 255, 255),
+      layers,
+      guides: Array.isArray(p.guides) ? p.guides : [],
+      masters: Array.isArray(p.masters) ? p.masters : [],
+    }
+  })
+  const activePageId = pages.some((p) => p.id === raw.activePageId) ? (raw.activePageId as ID) : pages[0].id
+  return {
+    id: raw.id || fallback.id,
+    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name : fallback.name,
+    version: Number.isFinite(raw.version) ? (raw.version as number) : 1,
+    createdAt: Number.isFinite(raw.createdAt) ? (raw.createdAt as number) : fallback.createdAt,
+    modifiedAt: Number.isFinite(raw.modifiedAt) ? (raw.modifiedAt as number) : fallback.modifiedAt,
+    pages,
+    activePageId,
+    colorStyles: Array.isArray(raw.colorStyles) ? raw.colorStyles : [],
+    palette: raw.palette && typeof raw.palette === 'object' ? raw.palette : fallback.palette,
+    settings: { ...defaultSettings(), ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) },
+    embeddedFonts: Array.isArray(raw.embeddedFonts) ? raw.embeddedFonts : [],
+    meta: { ...fallback.meta, ...(raw.meta && typeof raw.meta === 'object' ? raw.meta : {}) },
+  }
+}
+
 export function createVector(overrides: Partial<VectorObject> & { path: PathData; primitive?: Primitive }): VectorObject {
   return {
     id: uid('obj'),

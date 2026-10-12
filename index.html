@@ -23,9 +23,60 @@
     <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
     <link rel="stylesheet" href="%BASE_URL%fonts/fonts.css" />
+    <style>
+      html, body, #root { height: 100%; margin: 0; background: #101418; color: #e8edf2; font-family: system-ui, -apple-system, sans-serif; }
+      .boot { display: grid; place-items: center; align-content: center; gap: 14px; height: 100%; color: #9aa7b4; font-size: 13px; text-align: center; padding: 24px; }
+      .boot-mark { width: 34px; height: 34px; border-radius: 50%; border: 2px solid #2c3540; border-top-color: #12a19a; animation: boot-spin 0.9s linear infinite; }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot" role="status" aria-live="polite">
+        <span class="boot-mark" aria-hidden="true"></span>
+        <span>Starting CorelByDre…</span>
+      </div>
+    </div>
+    <script>
+      window.addEventListener('load', function () {
+        setTimeout(function () {
+          if (window.__CORELBYDRE_MOUNTED__) {
+            try { sessionStorage.removeItem('corelbydre.boot-retry'); } catch (e) {}
+            return;
+          }
+          var retried = false;
+          try {
+            retried = sessionStorage.getItem('corelbydre.boot-retry') === '1';
+            if (!retried) sessionStorage.setItem('corelbydre.boot-retry', '1');
+          } catch (e) {}
+          var cleanup = Promise.resolve();
+          if ('serviceWorker' in navigator) {
+            cleanup = navigator.serviceWorker.getRegistrations().then(function (regs) {
+              return Promise.all(regs.map(function (r) { return r.unregister(); }));
+            }).catch(function () {});
+          }
+          if ('caches' in window) {
+            cleanup = cleanup.then(function () {
+              return caches.keys().then(function (keys) {
+                return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+              });
+            }).catch(function () {});
+          }
+          cleanup.then(function () {
+            if (!retried) {
+              var url = new URL(window.location.href);
+              url.searchParams.set('v', String(Date.now()));
+              window.location.replace(url.toString());
+              return;
+            }
+            var root = document.getElementById('root');
+            if (root && !window.__CORELBYDRE_MOUNTED__) {
+              root.innerHTML = '<div class="boot" role="alert"><strong>CorelByDre is updating its workspace assets</strong><span>A deployment or cached bundle is refreshing. Click below to reload the latest build.</span><button type="button" onclick="window.location.reload()" style="padding:7px 14px;border-radius:6px;border:1px solid #12a19a;background:#12a19a;color:#04191a;font-weight:600;cursor:pointer">Reload CorelByDre</button></div>';
+            }
+          });
+        }, 4500);
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

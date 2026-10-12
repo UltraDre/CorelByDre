@@ -11,15 +11,49 @@
  * browsing, a cold IndexedDB upgrade), the workspace opens anyway instead of
  * leaving the user staring at a splash screen forever.
  */
-import { useEffect, useState } from 'react'
+import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { AppShell } from './ui/AppShell'
 import { useCollab } from './store/collab'
 import { useStore } from './store/store'
+import { createDocument } from './store/mutations'
 import { restoreLastSession } from './ui/fileOps'
 import { DB_TIMEOUT, storageAvailable } from './lib/storage'
 
 /** Long enough for a warm IndexedDB read, short enough that nobody waits on it. */
 const RESTORE_BUDGET_MS = 1_500
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error('[CorelByDre] UI render error caught by boundary', error, info)
+  }
+
+  private resetWorkspace = () => {
+    useStore.getState().replaceDocument(createDocument('Untitled-1'), { markClean: true })
+    useStore.getState().setHome(true)
+    this.setState({ error: null })
+  }
+
+  render(): ReactNode {
+    if (this.state.error) {
+      return (
+        <div className="boot" role="alert">
+          <strong>CorelByDre hit an unexpected rendering error</strong>
+          <span className="tiny">{this.state.error.message}</span>
+          <button type="button" className="btn primary" onClick={this.resetWorkspace}>
+            Reset workspace
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 export default function App() {
   const theme = useStore((s) => s.theme)
@@ -111,5 +145,9 @@ export default function App() {
       </div>
     )
   }
-  return <AppShell />
+  return (
+    <AppErrorBoundary>
+      <AppShell />
+    </AppErrorBoundary>
+  )
 }

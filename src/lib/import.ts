@@ -8,7 +8,7 @@
 import type { Document, PathData, PathNode, SceneObject, SubPath } from '../types'
 import { uid, pathFromSubpaths, subPath, node, rectNorm, slugify } from './util'
 import { parseHex, rgb } from './color'
-import { createBitmap, createDocument, createGroup, createTextObject, createVector, rectPathData } from '../store/mutations'
+import { createBitmap, createDocument, createGroup, createTextObject, createVector, normalizeDocument, rectPathData } from '../store/mutations'
 import { parseSvgPath } from './text'
 // pdf.js v4 only defaults `GlobalWorkerOptions.workerSrc` under Node. In a
 // browser the getter throws `No "GlobalWorkerOptions.workerSrc" specified`,
@@ -884,11 +884,9 @@ export async function importCDR(
     const cbdChunk = allChunks.find((c) => c.id === 'CBD ' || c.id === 'JSON')
     if (cbdChunk && cbdChunk.data.byteLength > 2) {
       try {
-        const parsed = JSON.parse(decoder.decode(cbdChunk.data)) as Document
-        if (parsed && Array.isArray(parsed.pages)) {
-          if (name && (!parsed.name || parsed.name === 'Untitled-1')) parsed.name = name
-          return { document: parsed, warnings: [], stats: countDocStats(parsed) }
-        }
+        const parsed = normalizeDocument(JSON.parse(decoder.decode(cbdChunk.data)))
+        if (name && (!parsed.name || parsed.name === 'Untitled-1')) parsed.name = name
+        return { document: parsed, warnings: [], stats: countDocStats(parsed) }
       } catch {
         /* fall through to SVG / chunk reconstruction */
       }
@@ -1012,8 +1010,9 @@ export async function importCDR(
   const text = decoder.decode(bytes).trim()
   if (text.startsWith('{')) {
     try {
-      const parsed = JSON.parse(text) as Document
-      if (parsed && Array.isArray(parsed.pages)) {
+      const raw = JSON.parse(text) as Document
+      if (raw && Array.isArray(raw.pages)) {
+        const parsed = normalizeDocument(raw)
         if (name && (!parsed.name || parsed.name === 'Untitled-1')) parsed.name = name
         return { document: parsed, warnings: [], stats: countDocStats(parsed) }
       }
@@ -1066,7 +1065,7 @@ export async function importFile(file: File): Promise<ImportResult> {
     case 'corelbydre':
     case 'json': {
       const text = await file.text()
-      const parsed = JSON.parse(text) as Document
+      const parsed = normalizeDocument(JSON.parse(text))
       return { document: parsed, warnings: [], stats: countDocStats(parsed) }
     }
     case 'pdf':

@@ -60,7 +60,17 @@ export const EFFECT_DEFS: EffectDef[] = [
   /* --------------------------------------------------------------- blur --- */
   { kind: 'gaussian-blur', label: 'Gaussian Blur', group: 'Blur', rasterised: true, params: [p('radius', 'Radius', 'slider', 4, 0, 200, 1, { unit: 'px' }), p('blurAlpha', 'Blur edges', 'checkbox', false)] },
   { kind: 'blur-mask', label: 'Blur Mask (depth of field)', group: 'Blur', rasterised: true, hint: 'Keeps a focus band sharp and blurs progressively away from it.', params: [p('focusY', 'Focus at', 'slider', 0.5, 0, 1, 0.01), p('band', 'Sharp band', 'slider', 0.2, 0, 1, 0.01), p('radius', 'Blur radius', 'slider', 14, 0, 100, 1, { unit: 'px' }), p('invert', 'Blur the centre instead', 'checkbox', false)] },
-  { kind: 'lens', label: 'Lens / Fisheye', group: 'Distort', rasterised: true, params: [p('amount', 'Strength', 'slider', 0.25, -1, 1, 0.01), p('zoom', 'Zoom', 'slider', 1, 0.4, 2.5, 0.01), p('edge', 'Edge handling', 'select', 'clamp', undefined, undefined, undefined, { options: [{ value: 'clamp', label: 'Stretch edges' }, { value: 'transparent', label: 'Transparent' }] })] },
+  { kind: 'lens', label: 'Lens', group: 'Distort', rasterised: true, hint: 'Live colour, alpha and fisheye lens simulations applied to the selected object.', params: [
+    p('mode', 'Lens type', 'select', 'fisheye', undefined, undefined, undefined, { options: [
+      { value: 'fisheye', label: 'Fisheye' }, { value: 'brighten', label: 'Brighten' }, { value: 'tint', label: 'Tint' },
+      { value: 'grayscale', label: 'Grayscale' }, { value: 'invert', label: 'Invert' }, { value: 'transparency', label: 'Transparency' },
+      { value: 'wireframe', label: 'Wireframe' }, { value: 'heatmap', label: 'Heat map' },
+    ] }),
+    p('amount', 'Strength', 'slider', 0.25, -1, 1, 0.01),
+    p('zoom', 'Zoom', 'slider', 1, 0.4, 2.5, 0.01),
+    p('color', 'Tint colour', 'color', '#12a19a'),
+    p('edge', 'Edge handling', 'select', 'clamp', undefined, undefined, undefined, { options: [{ value: 'clamp', label: 'Stretch edges' }, { value: 'transparent', label: 'Transparent' }] }),
+  ] },
 
   /* ------------------------------------------------------------ sharpen --- */
   { kind: 'sharpen', label: 'Sharpen (unsharp mask)', group: 'Sharpen', rasterised: true, params: [p('amount', 'Amount', 'slider', 0.6, 0, 4, 0.05)] },
@@ -329,7 +339,7 @@ export function applyEffect(
       return out
     }
     case 'lens':
-      return lensWarp(data, w, h, num(params.amount, 0.25), num(params.zoom, 1), str(params.edge, 'clamp') === 'transparent')
+      return applyLensMode(data, w, h, params)
     case 'upsample': {
       const scale = clamp(num(params.scale, 2), 1, 4)
       const dw = Math.max(1, Math.round(w * scale))
@@ -436,6 +446,72 @@ export function hexToRgb(hex: string): RGBA {
 }
 
 /* ----------------------------------------------------------- operators ----- */
+
+function applyLensMode(data: Bytes, w: number, h: number, params: Record<string, unknown>): Bytes {
+  const mode = str(params.mode, 'fisheye')
+  const amount = clamp(num(params.amount, 0.25), -1, 1)
+  if (mode === 'fisheye') return lensWarp(data, w, h, amount, num(params.zoom, 1), str(params.edge, 'clamp') === 'transparent')
+  const out = new Uint8ClampedArray(data)
+  const tint = hexToRgb(str(params.color, '#12a19a'))
+  const strength = Math.abs(amount)
+  const lumAt = (x: number, y: number) => {
+    const px = clamp(Math.round(x), 0, w - 1)
+    const py = clamp(Math.round(y), 0, h - 1)
+    const i = (py * w + px) * 4
+    return 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+  }
+  const heat = (v: number): RGBA => {
+    const stops = [
+      { at: 0, c: { r: 13, g: 20, b: 88, a: 1 } },
+      { at: 0.25, c: { r: 0, g: 190, b: 255, a: 1 } },
+      { at: 0.5, c: { r: 45, g: 220, b: 88, a: 1 } },
+      { at: 0.75, c: { r: 255, g: 218, b: 25, a: 1 } },
+      { at: 1, c: { r: 234, g: 35, b: 25, a: 1 } },
+    ]
+    const i = stops.findIndex((stop, index) => index < stops.length - 1 && v <= stops[index + 1].at)
+    const a = stops[Math.max(0, i)]
+    const b = stops[Math.max(1, i + 1)]
+    const t = clamp((v - a.at) / Math.max(1e-6, b.at - a.at), 0, 1)
+    return { r: a.c.r + (b.c.r - a.c.r) * t, g: a.c.g + (b.c.g - a.c.g) * t, b: a.c.b + (b.c.b - a.c.b) * t, a: 1 }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4
+      const r = data[i]; const g = data[i + 1]; const b = data[i + 2]
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+      if (mode === 'brighten') {
+        const shift = amount * 150
+        out[i] = clamp(r + shift, 0, 255); out[i + 1] = clamp(g + shift, 0, 255); out[i + 2] = clamp(b + shift, 0, 255)
+      } else if (mode === 'tint') {
+        const t = strength * (amount < 0 ? 0.55 : 1)
+        out[i] = r * (1 - t) + tint.r * t; out[i + 1] = g * (1 - t) + tint.g * t; out[i + 2] = b * (1 - t) + tint.b * t
+      } else if (mode === 'grayscale') {
+        const gray = r * (1 - strength) + lum * strength
+        out[i] = gray; out[i + 1] = gray; out[i + 2] = gray
+      } else if (mode === 'invert') {
+        out[i] = r * (1 - strength) + (255 - r) * strength
+        out[i + 1] = g * (1 - strength) + (255 - g) * strength
+        out[i + 2] = b * (1 - strength) + (255 - b) * strength
+      } else if (mode === 'transparency') {
+        out[i + 3] = data[i + 3] * clamp(1 - amount, 0, 2)
+      } else if (mode === 'heatmap') {
+        const color = heat(lum / 255)
+        out[i] = r * (1 - strength) + color.r * strength
+        out[i + 1] = g * (1 - strength) + color.g * strength
+        out[i + 2] = b * (1 - strength) + color.b * strength
+      } else if (mode === 'wireframe') {
+        const gx = lumAt(x + 1, y) - lumAt(x - 1, y)
+        const gy = lumAt(x, y + 1) - lumAt(x, y - 1)
+        const edge = clamp(Math.hypot(gx, gy) * Math.max(0.35, strength * 2) / 255, 0, 1)
+        const line = 255 * (1 - edge)
+        out[i] = r * (1 - strength) + line * strength
+        out[i + 1] = g * (1 - strength) + line * strength
+        out[i + 2] = b * (1 - strength) + line * strength
+      }
+    }
+  }
+  return out
+}
 
 function lensWarp(data: Bytes, w: number, h: number, amount: number, zoom: number, transparentEdges: boolean): Bytes {
   const out = new Uint8ClampedArray(data.length)

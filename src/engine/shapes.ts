@@ -307,6 +307,113 @@ export function sampleProfile(profile: number[], t: number): number {
   return a + (b - a) * f
 }
 
+/**
+ * Build a filled broad-nib outline from an open path. Width varies with the
+ * angle between the path tangent and the nib, matching a traditional chisel
+ * pen: parallel strokes are hairlines and perpendicular strokes are full width.
+ */
+export function calligraphyOutline(
+  path: PathData,
+  width: number,
+  nibAngleDeg: number,
+  minWidth = 0.08,
+  pressures: number[] = [],
+): PathData {
+  const loops = flattenPath(path, 10)
+  const pieces: SubPath[] = []
+  const nibAngle = nibAngleDeg * DEG
+  const maxWidth = Math.max(0.1, Math.abs(width))
+  const minRatio = clamp(minWidth, 0, 1)
+  for (let li = 0; li < loops.length; li++) {
+    const points = loops[li].filter((pt, i, all) => i === 0 || vDist(pt, all[i - 1]) > 1e-5)
+    if (points.length < 2) continue
+    const left: Vec[] = []
+    const right: Vec[] = []
+    for (let i = 0; i < points.length; i++) {
+      const prev = points[Math.max(0, i - 1)]
+      const next = points[Math.min(points.length - 1, i + 1)]
+      const tangent = vNorm({ x: next.x - prev.x, y: next.y - prev.y })
+      const angle = Math.atan2(tangent.y, tangent.x)
+      const broadness = Math.abs(Math.sin(angle - nibAngle))
+      const t = points.length <= 1 ? 0 : i / (points.length - 1)
+      const pressure = pressures.length ? clamp(sampleProfile(pressures, t), 0.12, 1) : 1
+      const half = maxWidth * (minRatio + (1 - minRatio) * broadness) * pressure / 2
+      const normal = vPerp(tangent)
+      left.push({ x: points[i].x + normal.x * half, y: points[i].y + normal.y * half })
+      right.push({ x: points[i].x - normal.x * half, y: points[i].y - normal.y * half })
+    }
+    const polygon = [...left, ...right.reverse()]
+    if (polygon.length >= 3) pieces.push(...pathFromPoints(polygon, true, 0.22).subpaths)
+  }
+  return pathFromSubpaths(pieces)
+}
+
+/** Reverse each selected path while keeping each cubic segment geometrically identical. */
+export function reverseSubpath(path: PathData, sub: number): PathData {
+  const subpaths = path.subpaths.map((sp, i) => i !== sub ? sp : ({
+    ...sp,
+    nodes: [...sp.nodes].reverse().map((n) => ({ ...n, inX: n.outX, inY: n.outY, outX: n.inX, outY: n.inY })),
+  }))
+  return { ...path, subpaths }
+}
+
+export function closeOpenSubpaths(path: PathData): PathData {
+  return { ...path, subpaths: path.subpaths.map((sp) => sp.nodes.length >= 3 ? { ...sp, closed: true } : sp) }
+}
+
+/** Split an open curve at a node; the split node is duplicated at both ends. */
+export function splitSubpathAtNode(path: PathData, sub: number, index: number): PathData {
+  const sp = path.subpaths[sub]
+  if (!sp || sp.nodes.length < 3 || index <= 0 || index >= sp.nodes.length - 1) return path
+  const first = { ...sp, nodes: sp.nodes.slice(0, index + 1), closed: false }
+  const second = { ...sp, nodes: sp.nodes.slice(index), closed: false }
+  const subpaths = path.subpaths.flatMap((s, i) => i === sub ? [first, second] : [s])
+  return { ...path, subpaths }
+}
+
+/** Convert the segment starting at `index` to a straight line or a straight cubic. */
+export function setSegmentCurve(path: PathData, sub: number, index: number, curved: boolean): PathData {
+  const sp = path.subpaths[sub]
+  if (!sp || sp.nodes.length < 2 || (!sp.closed && index >= sp.nodes.length - 1)) return path
+  const nextIndex = (index + 1) % sp.nodes.length
+  const a = sp.nodes[index]
+  const b = sp.nodes[nextIndex]
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const nodes = sp.nodes.map((n, i) => {
+    if (i === index) return { ...n, outX: curved ? a.x + dx / 3 : a.x, outY: curved ? a.y + dy / 3 : a.y }
+    if (i === nextIndex) return { ...n, inX: curved ? b.x - dx / 3 : b.x, inY: curved ? b.y - dy / 3 : b.y }
+    return n
+  })
+  return { ...path, subpaths: path.subpaths.map((s, i) => i === sub ? { ...s, nodes } : s) }
+}
+
+/** Flatten an extrusion side into deterministic quadrilateral faces for render/export. */
+export function extrusionFaces(path: PathData, dx: number, dy: number, quality = 10, steps = 1): PathData[] {
+  const faces: PathData[] = []
+  const bands = clamp(Math.round(steps), 1, 48)
+  const loops = flattenPath(path, quality)
+  for (const source of loops) {
+    if (source.length < 2) continue
+    for (let i = 0; i < source.length - 1; i++) {
+      const a = source[i]
+      const b = source[i + 1]
+      for (let s = 0; s < bands; s++) {
+        const t0 = s / bands
+        const t1 = (s + 1) / bands
+        const quad = [
+          { x: a.x + dx * t0, y: a.y + dy * t0 },
+          { x: b.x + dx * t0, y: b.y + dy * t0 },
+          { x: b.x + dx * t1, y: b.y + dy * t1 },
+          { x: a.x + dx * t1, y: a.y + dy * t1 },
+        ]
+        faces.push(pathFromSubpaths([subPath(quad.map((p) => node(p.x, p.y)), true)]))
+      }
+    }
+  }
+  return faces
+}
+
 /* ------------------------------------------------------------ envelopes ---- */
 
 export const ENVELOPE_PRESETS: { id: string; label: string; grid: (rows: number, cols: number) => { x: number; y: number }[]; rows: number; cols: number }[] = [
@@ -555,30 +662,46 @@ export function breakApart(path: PathData): PathData[] {
 /** Join subpaths whose endpoints are within `tolerance`. */
 export function joinSubpaths(path: PathData, tolerance: number): PathData {
   const subs = path.subpaths.map((s) => ({ ...s, nodes: [...s.nodes] }))
-  let merged = true
-  while (merged) {
-    merged = false
+  const reverseNodes = (nodes: PathNode[]) => [...nodes].reverse().map((n) => ({ ...n, inX: n.outX, inY: n.outY, outX: n.inX, outY: n.inY }))
+  const distance = (a: PathNode, b: PathNode) => Math.hypot(a.x - b.x, a.y - b.y)
+  const joinAt = (a: PathNode, b: PathNode): PathNode => {
+    const x = (a.x + b.x) / 2
+    const y = (a.y + b.y) / 2
+    return {
+      ...a, x, y,
+      inX: a.inX + x - a.x, inY: a.inY + y - a.y,
+      outX: b.outX + x - b.x, outY: b.outY + y - b.y,
+      type: a.type === 'sharp' || b.type === 'sharp' ? 'sharp' : a.type === 'symmetric' && b.type === 'symmetric' ? 'symmetric' : 'smooth',
+    }
+  }
+  let changed = true
+  while (changed) {
+    changed = false
     outer: for (let i = 0; i < subs.length; i++) {
       for (let j = i + 1; j < subs.length; j++) {
         const a = subs[i]
         const b = subs[j]
-        if (!a.nodes.length || !b.nodes.length) continue
-        const aStart = a.nodes[0]
-        const aEnd = a.nodes[a.nodes.length - 1]
-        const bStart = b.nodes[0]
-        const bEnd = b.nodes[b.nodes.length - 1]
-        const close = (p: PathNode, q: PathNode) => Math.hypot(p.x - q.x, p.y - q.y) <= tolerance
-        if (close(aEnd, bStart)) {
-          subs[i] = { closed: a.closed || b.closed, nodes: [...a.nodes, ...b.nodes] }
-        } else if (close(bEnd, aStart)) {
-          subs[i] = { closed: a.closed || b.closed, nodes: [...b.nodes, ...a.nodes] }
-        } else if (close(aEnd, bEnd)) {
-          subs[i] = { closed: a.closed || b.closed, nodes: [...a.nodes, ...b.nodes.slice().reverse()] }
-        } else if (close(aStart, bStart)) {
-          subs[i] = { closed: a.closed || b.closed, nodes: [...a.nodes.slice().reverse(), ...b.nodes] }
-        } else continue
+        if (a.closed || b.closed || a.nodes.length < 2 || b.nodes.length < 2) continue
+        const orientations: [PathNode[], PathNode[]][] = [
+          [a.nodes, b.nodes],
+          [a.nodes, reverseNodes(b.nodes)],
+          [reverseNodes(a.nodes), b.nodes],
+          [reverseNodes(a.nodes), reverseNodes(b.nodes)],
+        ]
+        const match = orientations.find(([aa, bb]) => distance(aa[aa.length - 1], bb[0]) <= tolerance)
+        if (!match) continue
+        const [aa, bb] = match
+        const seam = joinAt(aa[aa.length - 1], bb[0])
+        let nodes = [...aa.slice(0, -1), seam, ...bb.slice(1)]
+        let closed = false
+        if (nodes.length > 2 && distance(nodes[0], nodes[nodes.length - 1]) <= tolerance) {
+          const closure = joinAt(nodes[nodes.length - 1], nodes[0])
+          nodes = [{ ...closure, outX: nodes[0].outX, outY: nodes[0].outY }, ...nodes.slice(1, -1)]
+          closed = true
+        }
+        subs[i] = { nodes, closed }
         subs.splice(j, 1)
-        merged = true
+        changed = true
         break outer
       }
     }
@@ -638,11 +761,33 @@ export function setNodeType(path: PathData, sub: number, index: number, type: Pa
     const nodes = sp.nodes.map((n, ni) => {
       if (ni !== index) return n
       if (type === 'sharp') return { ...n, inX: n.x, inY: n.y, outX: n.x, outY: n.y, type }
-      const prev = sp.nodes[(ni - 1 + sp.nodes.length) % sp.nodes.length]
-      const next = sp.nodes[(ni + 1) % sp.nodes.length]
-      const dx = next.x - prev.x
-      const dy = next.y - prev.y
-      return { ...n, inX: n.x - dx * 0.25, inY: n.y - dy * 0.25, outX: n.x + dx * 0.25, outY: n.y + dy * 0.25, type }
+      // Open endpoints have only one adjacent segment; do not wrap their
+      // tangent across the far end of the curve.
+      const hasPrev = sp.closed || ni > 0
+      const hasNext = sp.closed || ni < sp.nodes.length - 1
+      const prev = hasPrev ? sp.nodes[(ni - 1 + sp.nodes.length) % sp.nodes.length] : n
+      const next = hasNext ? sp.nodes[(ni + 1) % sp.nodes.length] : n
+      let dx = next.x - prev.x
+      let dy = next.y - prev.y
+      if (!hasPrev) { dx = next.x - n.x; dy = next.y - n.y }
+      else if (!hasNext) { dx = n.x - prev.x; dy = n.y - prev.y }
+      const len = Math.hypot(dx, dy) || 1
+      const ux = dx / len
+      const uy = dy / len
+      const defaultHandle = Math.min(len / 3, 1e6)
+      const inLength = Math.hypot(n.x - n.inX, n.y - n.inY) || defaultHandle
+      const outLength = Math.hypot(n.outX - n.x, n.outY - n.y) || defaultHandle
+      const symmetricLength = Math.max(0.01, (inLength + outLength) / 2)
+      const left = type === 'symmetric' ? symmetricLength : inLength
+      const right = type === 'symmetric' ? symmetricLength : outLength
+      return {
+        ...n,
+        inX: hasPrev ? n.x - ux * left : n.x,
+        inY: hasPrev ? n.y - uy * left : n.y,
+        outX: hasNext ? n.x + ux * right : n.x,
+        outY: hasNext ? n.y + uy * right : n.y,
+        type,
+      }
     })
     return { ...sp, nodes }
   })

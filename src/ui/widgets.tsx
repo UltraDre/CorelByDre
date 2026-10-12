@@ -103,7 +103,7 @@ export function Labeled({ label, children, wide = false }: { label: string; chil
 }
 
 export function Slider({
-  label, value, min, max, step = 1, onChange, unit, format,
+  label, value, min, max, step = 1, onChange, unit, format, disabled = false,
 }: {
   label?: string
   value: number
@@ -113,9 +113,10 @@ export function Slider({
   onChange: (v: number) => void
   unit?: string
   format?: (v: number) => string
+  disabled?: boolean
 }) {
   return (
-    <div className="col" style={{ gap: 2 }}>
+    <div className="col" style={{ gap: 2, opacity: disabled ? 0.55 : 1 }}>
       {label !== undefined ? (
         <div className="row between">
           <span className="lbl">{label}</span>
@@ -129,6 +130,7 @@ export function Slider({
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(Number(e.target.value))}
       />
     </div>

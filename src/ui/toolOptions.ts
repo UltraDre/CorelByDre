@@ -28,6 +28,10 @@ export interface ToolOptions {
   brushWidth: number
   brushPreset: string
   brushPressure: boolean
+  calligraphyNibWidth: number
+  calligraphyNibAngle: number
+  calligraphyMinWidth: number
+  calligraphyPressure: boolean
   variableWidth: number
   /* effects */
   distortRadius: number
@@ -36,10 +40,14 @@ export interface ToolOptions {
   blendMode: string
   contourSteps: number
   contourOffset: number
+  envelopePreset: string
   shadowDx: number
   shadowDy: number
   shadowBlur: number
   blockShadowSteps: number
+  extrudeDepth: number
+  extrudeAngle: number
+  extrudeSteps: number
   /* symmetry */
   symmetryEnabled: boolean
   symmetryMode: 'mirror' | 'radial' | 'kaleidoscope'
@@ -84,6 +92,10 @@ export const DEFAULT_TOOL_OPTIONS: ToolOptions = {
   brushWidth: 8,
   brushPreset: 'marker-round',
   brushPressure: true,
+  calligraphyNibWidth: 12,
+  calligraphyNibAngle: 45,
+  calligraphyMinWidth: 0.08,
+  calligraphyPressure: true,
   variableWidth: 6,
   distortRadius: 60,
   distortStrength: 0.5,
@@ -91,10 +103,14 @@ export const DEFAULT_TOOL_OPTIONS: ToolOptions = {
   blendMode: 'multiply',
   contourSteps: 3,
   contourOffset: 8,
+  envelopePreset: 'arc-up',
   shadowDx: 8,
   shadowDy: 8,
   shadowBlur: 12,
   blockShadowSteps: 6,
+  extrudeDepth: 32,
+  extrudeAngle: 40,
+  extrudeSteps: 8,
   symmetryEnabled: false,
   symmetryMode: 'mirror',
   symmetryCount: 6,

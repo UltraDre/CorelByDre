@@ -7,14 +7,16 @@
  * available, and as embedded/standard fonts otherwise.
  */
 import {
-  PDFDocument, PDFName, PDFString, StandardFonts, rgb as pdfRgb,
+  PDFDocument, PDFName, PDFString, PDFNumber, PDFOperator, PDFOperatorNames, StandardFonts, rgb as pdfRgb,
   moveTo, lineTo, closePath, fill as pdfFill, stroke as pdfStroke, fillAndStroke,
-  setFillingRgbColor, setStrokingRgbColor, setLineWidth,
+  setFillingRgbColor, setStrokingRgbColor, setLineWidth, LineCapStyle, LineJoinStyle,
+  setLineCap, setLineJoin, setDashPattern, pushGraphicsState, popGraphicsState,
 } from 'pdf-lib'
 import type { Document, Page, RGBA, SceneObject, TextObject, VectorObject, BitmapObject, GroupObject, Fill, Stroke } from '../types'
 import { flattenPath, matApply, pathBounds, pathToSvgD, rectUnion, slugify, type Vec } from './util'
-import { css, hex, rgbToCmyk } from './color'
+import { css, hex, mixColor, rgbToCmyk } from './color'
 import { objectBounds, pathForObject, textLayoutOf } from '../engine/render'
+import { extrusionFaces } from '../engine/shapes'
 import { getPatternTile } from './patterns'
 
 export interface ExportOptions {
@@ -101,14 +103,47 @@ function fillToSvg(fill: Fill, defs: string[], bounds: { x: number; y: number; w
   }
 }
 
-function strokeAttrs(stroke: Stroke | null, precision: number): string {
+function strokeAttrs(stroke: Stroke | null, precision: number, markers = ''): string {
   if (!stroke) return ''
   const parts = [`stroke="${hex(stroke.color)}"`, `stroke-width="${stroke.width.toFixed(precision)}"`]
   if (stroke.color.a < 1) parts.push(`stroke-opacity="${stroke.color.a.toFixed(3)}"`)
   if (stroke.cap !== 'butt') parts.push(`stroke-linecap="${stroke.cap}"`)
   if (stroke.join !== 'miter') parts.push(`stroke-linejoin="${stroke.join}"`)
-  if (stroke.dash?.length) parts.push(`stroke-dasharray="${stroke.dash.join(' ')}"`)
+  parts.push(`stroke-miterlimit="${stroke.miterLimit.toFixed(precision)}"`)
+  if (stroke.dash?.length) parts.push(`stroke-dasharray="${stroke.dash.map((length) => length.toFixed(precision)).join(' ')}"`)
+  if (markers) parts.push(markers)
   return parts.join(' ')
+}
+
+function markerShape(style: NonNullable<Stroke['startArrow']>): string {
+  switch (style) {
+    case 'triangle': return 'M0 0 L8 4 L0 8 Z'
+    case 'stealth': return 'M0 0 L8 4 L0 8 L2.5 4 Z'
+    case 'diamond': return 'M0 4 L4 0 L8 4 L4 8 Z'
+    case 'open': return 'M0 0 L8 4 L0 8'
+    case 'circle': return 'M4 0 A4 4 0 1 0 4 8 A4 4 0 1 0 4 0 Z'
+    case 'bar': return 'M6 0 L6 8'
+    default: return ''
+  }
+}
+
+function svgMarkerAttrs(stroke: Stroke, defs: string[], id: string): string {
+  const scale = Math.max(0.2, stroke.arrowScale ?? 1)
+  const size = Math.max(stroke.width * 3.8, 6) * scale
+  const attrs: string[] = []
+  const markers: { key: 'startArrow' | 'endArrow'; side: 'start' | 'end' }[] = [
+    { key: 'startArrow', side: 'start' }, { key: 'endArrow', side: 'end' },
+  ]
+  for (const { key, side } of markers) {
+    const style = stroke[key]
+    if (!style || style === 'none') continue
+    const markerId = `arrow-${id}-${side}`
+    const fill = style === 'open' || style === 'bar' ? 'none' : hex(stroke.color)
+    const opacity = stroke.color.a < 1 ? ` stroke-opacity="${stroke.color.a.toFixed(3)}"` : ''
+    defs.push(`<marker id="${markerId}" viewBox="0 0 8 8" markerWidth="${size.toFixed(3)}" markerHeight="${size.toFixed(3)}" refX="8" refY="4" orient="${side === 'start' ? 'auto-start-reverse' : 'auto'}" markerUnits="userSpaceOnUse"><path d="${markerShape(style)}" fill="${fill}" stroke="${hex(stroke.color)}"${opacity} stroke-width="${Math.max(0.5, stroke.width * 0.75).toFixed(3)}" stroke-linejoin="round"/></marker>`)
+    attrs.push(`marker-${side}="url(#${markerId})"`)
+  }
+  return attrs.join(' ')
 }
 
 export function exportSVG(doc: Document, page: Page, options: ExportOptions = DEFAULT_EXPORT): string {
@@ -135,10 +170,45 @@ export function exportSVG(doc: Document, page: Page, options: ExportOptions = DE
         // fillToSvg may append opacity attributes; normalise by splitting on the marker.
         const [fillValue, extra] = fill.includes('" fill-opacity="') ? fill.split('" fill-opacity="') : [fill, '']
         const opacityAttr = extra ? ` fill-opacity="${extra.replace(/"/g, '')}"` : ''
-        const strokeAttr = strokeAttrs(obj.stroke, precision)
-        const d = pathToSvgD(pathForObject(obj) as never, undefined, precision)
+        const vectorPath = pathForObject(obj)
+        const objectScale = Math.max(0.05, Math.sqrt(Math.abs(obj.transform.a * obj.transform.d - obj.transform.b * obj.transform.c)))
+        const strokeScale = obj.stroke?.scaleWithObject === false ? 1 / objectScale : 1
+        const vectorStroke = obj.stroke
+          ? { ...obj.stroke, width: obj.stroke.width * strokeScale, dash: obj.stroke.dash?.map((length) => length * strokeScale) }
+          : null
+        const markersEnabled = !!vectorStroke
+          && (vectorStroke.startArrow && vectorStroke.startArrow !== 'none' || vectorStroke.endArrow && vectorStroke.endArrow !== 'none')
+          && vectorPath.subpaths.some((sub) => !sub.closed && sub.nodes.length >= 2)
+        const markerPaths = markersEnabled && vectorStroke
+          ? vectorPath.subpaths.map((sub, subIndex) => {
+            if (sub.nodes.length < 2) return ''
+            const markerAttrs = sub.closed ? '' : svgMarkerAttrs(vectorStroke, defs, `o${counter}-s${subIndex}`)
+            const subpathD = pathToSvgD({ ...vectorPath, subpaths: [sub] }, undefined, precision)
+            return `<path d="${subpathD}" fill="none" ${strokeAttrs(vectorStroke, precision, markerAttrs)}/>`
+          }).join('')
+          : ''
+        const strokeAttr = markersEnabled ? 'stroke="none"' : strokeAttrs(vectorStroke, precision)
+        const d = pathToSvgD(vectorPath as never, undefined, precision)
         const fillRule = obj.path.fillRule === 'evenodd' ? ' fill-rule="evenodd"' : ''
-        body.push(`  <g transform="${transform}"${opacity}${blendAttr}><path d="${d}" ${obj.fill.type === 'none' ? 'fill="none"' : `fill="${fillValue}"`}${opacityAttr}${fillRule} ${strokeAttr}/></g>`)
+        const sides = obj.extrude ? extrusionFaces(vectorPath, obj.extrude.dx, obj.extrude.dy, 10, obj.extrude.steps).map((face, index) => {
+          const steps = Math.max(1, Math.min(48, Math.round(obj.extrude!.steps)))
+          const band = index % steps
+          const shade = obj.extrude!.fade
+            ? mixColor(obj.extrude!.color, { r: 0, g: 0, b: 0, a: obj.extrude!.color.a }, 0.42 * band / Math.max(1, steps - 1))
+            : obj.extrude!.color
+          const edge = obj.extrude!.showLines
+            ? ` stroke="${hex(mixColor(shade, { r: 0, g: 0, b: 0, a: shade.a }, 0.35))}" stroke-width="${Math.max(0.35, (vectorStroke?.width ?? 1) * 0.45).toFixed(precision)}"`
+            : ''
+          return `<path d="${pathToSvgD(face as never, undefined, precision)}" fill="${hex(shade)}" fill-opacity="${shade.a.toFixed(3)}"${edge}/>`
+        }).join('') : ''
+        const fillOnlyPath = `<path d="${d}" ${obj.fill.type === 'none' ? 'fill="none"' : `fill="${fillValue}"`}${opacityAttr}${fillRule} stroke="none"/>`
+        const strokeOnlyPath = vectorStroke ? `<path d="${d}" fill="none" ${strokeAttrs(vectorStroke, precision)}/>` : ''
+        const vectorMarkup = vectorStroke?.behind
+          ? `${markersEnabled ? markerPaths : strokeOnlyPath}${fillOnlyPath}`
+          : markersEnabled
+            ? `${fillOnlyPath}${markerPaths}`
+            : `<path d="${d}" ${obj.fill.type === 'none' ? 'fill="none"' : `fill="${fillValue}"`}${opacityAttr}${fillRule} ${strokeAttr}/>`
+        body.push(`  <g transform="${transform}"${opacity}${blendAttr}>${sides}${vectorMarkup}</g>`)
         break
       }
       case 'text': {
@@ -488,23 +558,66 @@ async function drawPageToPDF(
     switch (obj.kind) {
       case 'vector': {
         const path = pathForObject(obj)
+        const drawableSubpaths = path.subpaths.filter((subpath) => subpath.nodes.length > 0)
         const loops = flattenPath(path, 12)
         const fillColor = uniformColorOf(obj.fill)
         const opacity = obj.opacity * (fillColor?.a ?? 1)
-        for (const loop of loops) {
-          if (loop.length < 3) continue
+        const objectScale = Math.max(0.05, Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)))
+        const strokeOperators = (stroke: Stroke): import('pdf-lib').PDFOperator[] => {
+          const scaleFactor = stroke.scaleWithObject === false ? 1 / objectScale : 1
+          const cap = stroke.cap === 'round' ? LineCapStyle.Round : stroke.cap === 'square' ? LineCapStyle.Projecting : LineCapStyle.Butt
+          const join = stroke.join === 'round' ? LineJoinStyle.Round : stroke.join === 'bevel' ? LineJoinStyle.Bevel : LineJoinStyle.Miter
+          return [
+            setLineCap(cap),
+            setLineJoin(join),
+            PDFOperator.of(PDFOperatorNames.SetLineMiterLimit, [PDFNumber.of(stroke.miterLimit)]),
+            setDashPattern(stroke.dash?.map((length) => length * scaleFactor * scale) ?? [], 0),
+          ]
+        }
+        if (obj.extrude) {
+          const steps = Math.max(1, Math.min(48, Math.round(obj.extrude.steps)))
+          const faces = extrusionFaces(path, obj.extrude.dx, obj.extrude.dy, 10, steps)
+          for (let index = 0; index < faces.length; index++) {
+            const loop = flattenPath(faces[index], 2)[0]
+            if (!loop || loop.length < 3) continue
+            const points = loop.map((p) => {
+              const local = { x: m.a * p.x + m.c * p.y + m.e, y: m.b * p.x + m.d * p.y + m.f }
+              return tx(local.x, local.y)
+            })
+            const band = index % steps
+            const shade = obj.extrude.fade
+              ? mixColor(obj.extrude.color, { r: 0, g: 0, b: 0, a: obj.extrude.color.a }, 0.18 + (band / Math.max(1, steps - 1)) * 0.42)
+              : obj.extrude.color
+            const blended = flattenAlpha(shade, page.background, obj.opacity * shade.a)
+            const ops: import('pdf-lib').PDFOperator[] = [pushGraphicsState(), moveTo(points[0].x, points[0].y)]
+            for (const point of points.slice(1)) ops.push(lineTo(point.x, point.y))
+            ops.push(closePath(), setFillingRgbColor(blended.r, blended.g, blended.b))
+            if (obj.extrude.showLines) {
+              const edge = flattenAlpha(mixColor(shade, { r: 0, g: 0, b: 0, a: shade.a }, 0.35), page.background, obj.opacity * shade.a)
+              ops.push(setStrokingRgbColor(edge.r, edge.g, edge.b), setLineWidth(Math.max(0.35, (obj.stroke?.width ?? 1) * (obj.stroke?.scaleWithObject === false ? 1 : objectScale) * scale * 0.45)))
+              ops.push(setDashPattern([], 0), fillAndStroke())
+            } else ops.push(pdfFill())
+            ops.push(popGraphicsState())
+            pdfPage.pushOperators(...ops)
+          }
+        }
+        for (let loopIndex = 0; loopIndex < loops.length; loopIndex++) {
+          const loop = loops[loopIndex]
+          const closed = drawableSubpaths[loopIndex]?.closed ?? false
+          if (loop.length < (closed ? 3 : 2)) continue
           const points = loop.map((p) => {
             const local = { x: m.a * p.x + m.c * p.y + m.e, y: m.b * p.x + m.d * p.y + m.f }
             return tx(local.x, local.y)
           })
-          const hasFill = fillColor !== null && obj.fill.type !== 'none'
+          const hasFill = closed && fillColor !== null && obj.fill.type !== 'none'
           const hasStroke = !!obj.stroke && obj.stroke.width > 0
           if (hasFill || hasStroke) {
-            const ops: import('pdf-lib').PDFOperator[] = []
+            const ops: import('pdf-lib').PDFOperator[] = [pushGraphicsState()]
             const first = points[0]
             ops.push(moveTo(first.x, first.y))
             for (let i = 1; i < points.length; i++) ops.push(lineTo(points[i].x, points[i].y))
-            ops.push(closePath())
+            if (closed) ops.push(closePath())
+            if (hasStroke && obj.stroke) ops.push(...strokeOperators(obj.stroke))
             if (hasFill && fillColor) {
               // Alpha is flattened against the page background — PDF/X-4 output
               // must stay device-independent, so no transparency groups here.
@@ -514,8 +627,15 @@ async function drawPageToPDF(
                 const sc = obj.stroke.color
                 const so = flattenAlpha(sc, page.background, obj.opacity * sc.a)
                 ops.push(setStrokingRgbColor(so.r, so.g, so.b))
-                ops.push(setLineWidth(Math.max(0.1, obj.stroke.width * scale)))
-                ops.push(fillAndStroke())
+                ops.push(setLineWidth(Math.max(0.1, obj.stroke.width * (obj.stroke.scaleWithObject === false ? 1 : objectScale) * scale)))
+                if (obj.stroke.behind) {
+                  ops.push(pdfStroke(), moveTo(first.x, first.y))
+                  for (let i = 1; i < points.length; i++) ops.push(lineTo(points[i].x, points[i].y))
+                  if (closed) ops.push(closePath())
+                  ops.push(pdfFill())
+                } else {
+                  ops.push(fillAndStroke())
+                }
               } else {
                 ops.push(pdfFill())
               }
@@ -523,14 +643,95 @@ async function drawPageToPDF(
               const sc = obj.stroke.color
               const so = flattenAlpha(sc, page.background, obj.opacity * sc.a)
               ops.push(setStrokingRgbColor(so.r, so.g, so.b))
-              ops.push(setLineWidth(Math.max(0.1, obj.stroke.width * scale)))
+              ops.push(setLineWidth(Math.max(0.1, obj.stroke.width * (obj.stroke.scaleWithObject === false ? 1 : objectScale) * scale)))
               ops.push(pdfStroke())
             }
             try {
+              ops.push(popGraphicsState())
               pdfPage.pushOperators(...ops)
             } catch {
               /* ignore malformed operator sequences */
             }
+          }
+        }
+        if (obj.stroke && obj.stroke.width > 0) {
+          const stroke = obj.stroke
+          const markerScale = Math.max(0.2, stroke.arrowScale ?? 1)
+          const baseWidth = stroke.width * (stroke.scaleWithObject === false ? 1 / objectScale : 1)
+          const strokeColor = flattenAlpha(stroke.color, page.background, obj.opacity * stroke.color.a)
+          const toPdf = (local: Vec) => {
+            const world = { x: m.a * local.x + m.c * local.y + m.e, y: m.b * local.x + m.d * local.y + m.f }
+            return tx(world.x, world.y)
+          }
+          const drawMarker = (style: NonNullable<Stroke['startArrow']>, tip: Vec, tangent: Vec): void => {
+            if (style === 'none') return
+            const magnitude = Math.hypot(tangent.x, tangent.y)
+            if (magnitude < 1e-8) return
+            const ux = tangent.x / magnitude
+            const uy = tangent.y / magnitude
+            const nx = -uy
+            const ny = ux
+            const length = Math.max(baseWidth * 3.8, 6) * markerScale
+            const base = { x: tip.x - ux * length, y: tip.y - uy * length }
+            const half = length * 0.38
+            const paths: { points: Vec[]; closed: boolean }[] = []
+            if (style === 'triangle') {
+              paths.push({ points: [tip, { x: base.x + nx * half, y: base.y + ny * half }, { x: base.x - nx * half, y: base.y - ny * half }], closed: true })
+            } else if (style === 'stealth') {
+              const waist = { x: tip.x - ux * length * 0.52, y: tip.y - uy * length * 0.52 }
+              paths.push({ points: [tip, { x: base.x + nx * half, y: base.y + ny * half }, waist, { x: base.x - nx * half, y: base.y - ny * half }], closed: true })
+            } else if (style === 'diamond') {
+              const mid = { x: tip.x - ux * length * 0.5, y: tip.y - uy * length * 0.5 }
+              paths.push({ points: [tip, { x: mid.x + nx * half, y: mid.y + ny * half }, base, { x: mid.x - nx * half, y: mid.y - ny * half }], closed: true })
+            } else if (style === 'circle') {
+              const center = { x: tip.x - ux * length * 0.42, y: tip.y - uy * length * 0.42 }
+              const radius = Math.max(baseWidth, length * 0.35)
+              const points = Array.from({ length: 16 }, (_, index) => {
+                const angle = index / 16 * Math.PI * 2
+                return { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius }
+              })
+              paths.push({ points, closed: true })
+            } else if (style === 'bar') {
+              paths.push({ points: [{ x: tip.x + nx * half, y: tip.y + ny * half }, { x: tip.x - nx * half, y: tip.y - ny * half }], closed: false })
+            } else {
+              paths.push({ points: [tip, { x: base.x + nx * half, y: base.y + ny * half }], closed: false })
+              paths.push({ points: [tip, { x: base.x - nx * half, y: base.y - ny * half }], closed: false })
+            }
+            const ops: import('pdf-lib').PDFOperator[] = [pushGraphicsState()]
+            for (const path of paths) {
+              if (!path.points.length) continue
+              const first = toPdf(path.points[0])
+              ops.push(moveTo(first.x, first.y))
+              for (const point of path.points.slice(1)) {
+                const mapped = toPdf(point)
+                ops.push(lineTo(mapped.x, mapped.y))
+              }
+              if (path.closed) ops.push(closePath())
+            }
+            const isOutline = style === 'open' || style === 'bar'
+            if (isOutline) {
+              ops.push(...strokeOperators(stroke), setStrokingRgbColor(strokeColor.r, strokeColor.g, strokeColor.b))
+              ops.push(setLineWidth(Math.max(0.5, baseWidth * 0.75) * objectScale * scale), pdfStroke())
+            } else {
+              ops.push(setFillingRgbColor(strokeColor.r, strokeColor.g, strokeColor.b), pdfFill())
+            }
+            ops.push(popGraphicsState())
+            pdfPage.pushOperators(...ops)
+          }
+          for (const subpath of path.subpaths) {
+            if (subpath.closed || subpath.nodes.length < 2) continue
+            const first = subpath.nodes[0]
+            const second = subpath.nodes[1]
+            const last = subpath.nodes[subpath.nodes.length - 1]
+            const previous = subpath.nodes[subpath.nodes.length - 2]
+            const firstTangent = Math.hypot(first.outX - first.x, first.outY - first.y) > 1e-6
+              ? { x: first.x - first.outX, y: first.y - first.outY }
+              : { x: first.x - second.x, y: first.y - second.y }
+            const lastTangent = Math.hypot(last.inX - last.x, last.inY - last.y) > 1e-6
+              ? { x: last.x - last.inX, y: last.y - last.inY }
+              : { x: last.x - previous.x, y: last.y - previous.y }
+            if (stroke.startArrow) drawMarker(stroke.startArrow, first, firstTangent)
+            if (stroke.endArrow) drawMarker(stroke.endArrow, last, lastTangent)
           }
         }
         break

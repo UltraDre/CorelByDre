@@ -7,7 +7,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import App from '../src/App'
 import { useStore } from '../src/store/store'
-import { createDocument } from '../src/store/mutations'
+import { createDocument, createVector, rectPathData } from '../src/store/mutations'
+import { rgb } from '../src/lib/color'
 import type { ToolID } from '../src/tools/registry'
 
 function stubContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
@@ -105,13 +106,31 @@ function objectCount(): number {
 }
 
 describe('canvas interaction', () => {
+  it('drags an editable extrusion from a selected vector', async () => {
+    await boot()
+    const vector = createVector({ path: rectPathData(20, 20, 100, 60), primitive: { type: 'rect', w: 100, h: 60, r: 0, corners: [1, 1, 1, 1] }, fill: { type: 'uniform', color: rgb(18, 161, 154) } })
+    await act(async () => {
+      useStore.getState().addObjectsToActiveLayer([vector], 'Add rectangle')
+      useStore.getState().setTool('extrude')
+    })
+    await flush()
+    await act(async () => { drag(70, 50, 100, 70) })
+    await flush()
+    const extruded = useStore.getState().doc.pages[0].layers[0].objects.find((o) => o.id === vector.id)
+    expect(extruded?.kind).toBe('vector')
+    if (extruded?.kind === 'vector') {
+      expect(extruded.extrude?.dx).toBeCloseTo(30, 4)
+      expect(extruded.extrude?.dy).toBeCloseTo(20, 4)
+    }
+  }, 30000)
+
   it('boots into an empty workspace', async () => {
     await boot()
     expect(stage()).toBeTruthy()
     expect(objectCount()).toBe(0)
   }, 30000)
 
-  const dragTools: ToolID[] = ['rectangle', 'ellipse', 'polygon', 'star', 'complexStar', 'graphPaper', 'spiral', 'line2', 'rect3', 'ellipse3', 'freehand', 'liveSketch', 'brush']
+  const dragTools: ToolID[] = ['rectangle', 'ellipse', 'polygon', 'star', 'complexStar', 'graphPaper', 'spiral', 'line2', 'rect3', 'ellipse3', 'freehand', 'liveSketch', 'brush', 'calligraphy']
   for (const tool of dragTools) {
     it(`${tool}: drag creates an object`, async () => {
       await act(async () => { useStore.getState().replaceDocument(createDocument('T', { id: 'a4', label: 'A4', w: 210, h: 297, unit: 'mm' }), { markClean: true }); useStore.getState().setTool(tool) })

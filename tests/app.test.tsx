@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import App from '../src/App'
+import { useStore } from '../src/store/store'
 
 function stubContext(): CanvasRenderingContext2D {
   const gradient = { addColorStop: () => undefined }
@@ -110,6 +111,18 @@ describe('editor shell', () => {
     expect(document.querySelector('canvas.stage')).not.toBeNull()
     expect(document.querySelectorAll('.tool').length).toBeGreaterThan(8)
     expect(document.querySelectorAll('.docker').length).toBeGreaterThanOrEqual(2)
+
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F11', bubbles: true })) })
+    expect(document.body.textContent).toContain('Fountain Fill')
+    await act(async () => { useStore.getState().setFillDialog(null) })
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F11', shiftKey: true, bubbles: true })) })
+    expect(document.body.textContent).toContain('Uniform Fill')
+    await act(async () => { useStore.getState().setFillDialog(null); window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', bubbles: true })) })
+    expect(document.body.textContent).toContain('Outline Pen')
+    await act(async () => { useStore.getState().setOutlineDialog(false); window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F9', bubbles: true })) })
+    expect(document.querySelector('.app.is-preview')).not.toBeNull()
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    expect(document.querySelector('.app.is-preview')).toBeNull()
 
     await act(async () => { root?.unmount() })
     container.remove()

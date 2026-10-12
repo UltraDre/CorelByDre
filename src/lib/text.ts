@@ -313,11 +313,16 @@ class FontManager {
     return Boolean(rec?.font)
   }
 
+  unitsPerEm(family: string): number {
+    const units = Number(this.records.get(family)?.font?.unitsPerEm)
+    return Number.isFinite(units) && units > 0 ? units : 1000
+  }
+
   /**
    * Glyph outline in em units (y-up, 1000/2048 unitsPerEm normalised to 1).
    * Cached per family + axis settings + character.
    */
-  outline(family: string, char: string, axes: Record<string, number> = {}): { d: string; advance: number } | null {
+  outline(family: string, char: string, axes: Record<string, number> = {}): { d: string; advance: number; unitsPerEm: number } | null {
     const rec = this.records.get(family)
     if (!rec?.font) return null
     const key = `${family}|${Object.entries(axes).sort().map(([k, v]) => `${k}${v}`).join(',')}|${char}`

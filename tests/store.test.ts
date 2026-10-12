@@ -94,16 +94,75 @@ describe('application store', () => {
     }
   })
 
-  it('nudges the selection by the configured step', () => {
+  it('nudges the selection by the configured step and repeats that nudge', () => {
     const rect = addRect(10, 10)
     useStore.getState().setSelection([rect.id])
     const step = useStore.getState().doc.settings.nudgeStep
     const before = objectBounds(rect, useStore.getState().doc)!
     useStore.getState().nudgeSelection(step, 0)
+    expect(useStore.getState().lastRepeat).toEqual({ kind: 'nudge', dx: step, dy: 0 })
+    useStore.getState().repeatLast()
     const doc = useStore.getState().doc
     const moved = doc.pages[0].layers[0].objects.find((o) => o.id === rect.id)!
     const after = objectBounds(moved, doc)!
-    expect(after.x - before.x).toBeCloseTo(step, 6)
+    expect(after.x - before.x).toBeCloseTo(step * 2, 6)
+  })
+
+  it('repeats duplicate actions on the current selection', () => {
+    const rect = addRect(10, 10)
+    useStore.getState().setSelection([rect.id])
+    useStore.getState().duplicateSelection()
+    expect(useStore.getState().lastRepeat).toEqual({ kind: 'duplicate' })
+    useStore.getState().repeatLast()
+    expect(useStore.getState().doc.pages[0].layers[0].objects).toHaveLength(3)
+  })
+
+  it('locks and unlocks all selected objects as one undoable command', () => {
+    const rect = addRect(10, 10)
+    useStore.getState().setSelection([rect.id])
+    useStore.getState().lockSelection()
+    expect(useStore.getState().doc.pages[0].layers[0].objects[0].locked).toBe(true)
+    useStore.getState().lockSelection()
+    expect(useStore.getState().doc.pages[0].layers[0].objects[0].locked).toBe(false)
+  })
+
+  it('deletes selected nodes without deleting the parent curve', () => {
+    const rect = addRect(10, 10)
+    useStore.getState().setSelection([rect.id])
+    useStore.getState().setNodeSelection([{ sub: 0, index: 1 }])
+    useStore.getState().deleteNodeSelection()
+    const object = useStore.getState().doc.pages[0].layers[0].objects[0]
+    expect(object.kind).toBe('vector')
+    if (object.kind === 'vector') expect(object.path.subpaths[0].nodes).toHaveLength(3)
+    expect(useStore.getState().nodeSelection).toEqual([])
+  })
+
+  it('adds editable extrusion and lens metadata to a vector', () => {
+    const rect = addRect(10, 10)
+    useStore.getState().setSelection([rect.id])
+    useStore.getState().applyExtrudeToSelection({ dx: 12, dy: -8, steps: 5 })
+    useStore.getState().addEffect('lens', 'effect')
+    const obj = useStore.getState().doc.pages[0].layers[0].objects[0]
+    expect(obj.kind).toBe('vector')
+    if (obj.kind === 'vector') {
+      expect(obj.extrude).toMatchObject({ dx: 12, dy: -8, steps: 5 })
+      expect(obj.effects.some((effect) => effect.type === 'effect' && effect.kind === 'lens')).toBe(true)
+    }
+  })
+
+  it('applies and removes an envelope without baking or double-warping the source path', () => {
+    const rect = addRect(10, 10)
+    useStore.getState().setSelection([rect.id])
+    useStore.getState().applyEnvelopePreset('arc-up')
+    const object = useStore.getState().doc.pages[0].layers[0].objects[0]
+    expect(object.kind).toBe('vector')
+    if (object.kind === 'vector') {
+      expect(object.envelope?.preset).toBe('arc-up')
+      expect(object.path).toBe(rect.path)
+    }
+    useStore.getState().removeEnvelope()
+    const restored = useStore.getState().doc.pages[0].layers[0].objects[0]
+    expect(restored.kind === 'vector' ? restored.envelope : undefined).toBeUndefined()
   })
 
   it('applies fills and strokes to the selection', () => {

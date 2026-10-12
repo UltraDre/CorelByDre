@@ -8,15 +8,16 @@
  * docker does is undoable.
  */
 import { useEffect, useMemo, useState } from 'react'
-import type { Adjustment, BitmapObject, BlendMode, ColorStyle, Effect, Fill, ID, NonDestructive, SceneObject } from '../types'
+import type { Adjustment, BitmapObject, BlendMode, ColorStyle, Effect, ExtrudeSettings, Fill, ID, LensMode, NonDestructive, SceneObject, VectorObject } from '../types'
 import { useStore, type DockerID } from '../store/store'
 import { EFFECT_DEFS, effectDef, makeAdjustment, makeEffect, runStack, stackSignature, BLEND_OPTIONS } from '../engine/effects'
 import { PHOTO_PRESETS, photoStats, applyLensCorrection, blurMask, correctPerspective, removeJpegArtifacts, selectSubject, selectionAll, selectionGrow, selectionInvert, selectionShrink, replaceColor, removeBackground, healBrush, DEFAULT_COLOR_REPLACE, DEFAULT_BG_REMOVAL, presetById } from '../lib/photo'
 import { BRUSH_PRESETS, pushMediaTray, loadMediaTray, presetByID } from '../engine/brush'
-import { combinePaths, booleanPath, simplifyPath, paperDistort, type BooleanOp } from '../engine/boolean'
-import { PALETTES, HARMONIES, harmonyColors, fillPrimaryColor, withPrimaryColor, css, hex, nearestColor, colorName } from '../lib/color'
-import { PAGE_PRESETS, addColorStyle, addMasterLayer, deletePage, duplicatePage, reorderObject, setPageSize, updateObject, documentColors } from '../store/mutations'
+import { booleanPath, simplifyPath, paperDistort, type BooleanOp } from '../engine/boolean'
+import { PALETTES, HARMONIES, harmonyColors, fillPrimaryColor, withPrimaryColor, css, hex, parseHex, nearestColor, colorName } from '../lib/color'
+import { PAGE_PRESETS, addColorStyle, addMasterLayer, deletePage, duplicatePage, reorderObject, setPageSize, updateObject, updateObjects, documentColors } from '../store/mutations'
 import { textLayoutOf } from '../engine/render'
+import { ENVELOPE_PRESETS } from '../engine/shapes'
 import { fonts } from '../lib/text'
 import { bakeSession, findBitmap, openSession, peekSession } from './photoSession'
 import { openSession as openPhotoSession } from './photoSession'
@@ -1138,10 +1139,18 @@ export function PrintDocker() {
 export function ShapingDocker() {
   const doc = useStore((s) => s.doc)
   const selection = useStore((s) => s.selection)
+  const nodeSelection = useStore((s) => s.nodeSelection)
   const commit = useStore((s) => s.commit)
   const toast = useStore((s) => s.toast)
+  const combineSelection = useStore((s) => s.combineSelection)
+  const breakApartSelection = useStore((s) => s.breakApartSelection)
+  const options = useToolOptions()
   const [busy, setBusy] = useState(false)
   const vectors = useMemo(() => selection.map((id) => findObjectById(doc, id)).filter((o): o is Extract<SceneObject, { kind: 'vector' }> => o?.kind === 'vector'), [doc, selection])
+  const hasOpenPath = vectors.some((v) => v.path.subpaths.some((sub) => !sub.closed))
+  const hasCompoundPath = vectors.some((v) => v.path.subpaths.length > 1)
+  const hasEnvelope = vectors.some((v) => !!v.envelope)
+  const envelopeStrength = vectors.find((v) => v.envelope)?.envelope?.strength ?? 1
 
   const run = async (op: BooleanOp) => {
     if (vectors.length < 2) {
@@ -1197,11 +1206,164 @@ export function ShapingDocker() {
           if (!result) { toast('warn', 'Smooth needs Paper.js'); return }
           commit('Smooth', (d) => updateObject(d, vectors[0].id, (o) => (o.kind === 'vector' ? { ...o, path: result } : o)))
         }}>Smooth</Button>
-        <Button small disabled={!vectors.length} onClick={() => commit('Combine', (d) => (vectors.length ? updateObject(d, vectors[0].id, (o) => (o.kind === 'vector' ? { ...o, path: combinePaths(vectors.map((v) => v.path)) } : o)) : d))}>Combine</Button>
+        <Button small disabled={vectors.length < 2} onClick={combineSelection}>Combine</Button>
+        <Button small disabled={!hasCompoundPath} onClick={breakApartSelection}>Break apart</Button>
       </Row>
-      <span className="tiny">Booleans run through Paper.js in a worker-friendly async call with a geometry fallback for simple overlaps.</span>
+      <div className="sep" />
+      <strong className="lbl">Envelope</strong>
+      <Row wrap>
+        <Select value={options.envelopePreset} width={150} onChange={(v) => setToolOptions({ envelopePreset: v })} options={ENVELOPE_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }))} />
+        <Button small disabled={!vectors.length} onClick={() => useStore.getState().applyEnvelopePreset(options.envelopePreset)}>Apply preset</Button>
+        <Button small variant="danger" disabled={!hasEnvelope} onClick={() => useStore.getState().removeEnvelope()}>Remove</Button>
+      </Row>
+      <Slider label="Envelope strength" value={envelopeStrength} min={0} max={2} step={0.01} disabled={!hasEnvelope} onChange={(v) => {
+        const ids = vectors.filter((object) => object.envelope).map((object) => object.id)
+        if (ids.length) commit('Envelope strength', (d) => updateObjects(d, ids, (o) => o.kind === 'vector' && o.envelope ? { ...o, envelope: { ...o.envelope, strength: v } } : o))
+      }} format={(v) => `${Math.round(v * 100)}%`} />
+      <div className="sep" />
+      <strong className="lbl">Curve and node operations</strong>
+      <Row wrap>
+        <Button small disabled={!nodeSelection.length} onClick={() => useStore.getState().applyNodeType('sharp')}>Sharp</Button>
+        <Button small disabled={!nodeSelection.length} onClick={() => useStore.getState().applyNodeType('smooth')}>Smooth node</Button>
+        <Button small disabled={!nodeSelection.length} onClick={() => useStore.getState().applyNodeType('symmetric')}>Symmetric</Button>
+        <Button small disabled={!hasOpenPath} onClick={() => useStore.getState().closeSelectedCurves()}>Close curve</Button>
+        <Button small disabled={!vectors.length} onClick={() => useStore.getState().joinSelectedCurves()}>Join endpoints</Button>
+        <Button small disabled={!vectors.length} onClick={() => useStore.getState().reverseSelectedCurves()}>Reverse direction</Button>
+        <Button small disabled={!nodeSelection.length} onClick={() => useStore.getState().breakSelectedCurve()}>Break at node</Button>
+        <Button small disabled={!nodeSelection.length} onClick={() => useStore.getState().setSelectedSegmentsCurve(true)}>Curve segment</Button>
+        <Button small disabled={!nodeSelection.length} onClick={() => useStore.getState().setSelectedSegmentsCurve(false)}>Line segment</Button>
+      </Row>
+      <span className="tiny">Booleans run through Paper.js in a worker-friendly async call with a geometry fallback for simple overlaps. Node commands affect the active vector and are undoable.</span>
     </Docker>
   )
+}
+
+/* =============================================================== extrude === */
+
+const DEFAULT_EXTRUDE: ExtrudeSettings = {
+  dx: 24, dy: 20, steps: 8, color: { r: 58, g: 68, b: 82, a: 1 }, showLines: false, fade: true,
+}
+
+export function ExtrudeDocker() {
+  const selection = useStore((s) => s.selection)
+  const doc = useStore((s) => s.doc)
+  const commit = useStore((s) => s.commit)
+  const vectors = useMemo(() => selection.map((id) => findObjectById(doc, id)).filter((o): o is VectorObject => o?.kind === 'vector'), [doc, selection])
+  const first = vectors[0]
+  const value = first?.extrude ? { ...DEFAULT_EXTRUDE, ...first.extrude } : DEFAULT_EXTRUDE
+  const unit = doc.settings.displayUnit
+  const unitPerPoint = unit === 'in' ? 1 / 72 : unit === 'mm' ? 25.4 / 72 : unit === 'px' ? 4 / 3 : 1
+  const depth = Math.hypot(value.dx, value.dy)
+  const angle = Math.atan2(value.dy, value.dx) * 180 / Math.PI
+
+  const patch = (changes: Partial<ExtrudeSettings>) => {
+    if (!vectors.length) return
+    commit('Extrude settings', (d) => updateObjects(d, vectors.map((v) => v.id), (o) => o.kind === 'vector'
+      ? { ...o, extrude: { ...DEFAULT_EXTRUDE, ...o.extrude, ...changes } }
+      : o))
+  }
+  const remove = () => {
+    if (!vectors.length) return
+    commit('Remove extrusion', (d) => updateObjects(d, vectors.map((v) => v.id), (o) => o.kind === 'vector' ? { ...o, extrude: undefined } : o))
+  }
+
+  return (
+    <Docker id="extrude" title="Extrude">
+      {!vectors.length ? <EmptyState text="Select a vector object, then activate Extrude." icon="effects" /> : (
+        <>
+          {vectors.some((v) => !v.extrude) ? <Button small variant="primary" onClick={() => useStore.getState().applyExtrudeToSelection()}>{vectors.some((v) => v.extrude) ? 'Add to remaining objects' : 'Add extrusion'}</Button> : null}
+          {vectors.length > 1 ? <span className="tiny">Values show the first selected vector; edits apply to every selected vector.</span> : null}
+          <span className="tiny">The extrusion is live vector geometry. Edit the source shape at any time; side faces follow it.</span>
+          <Slider label="Depth" value={depth * unitPerPoint} min={0} max={300 * unitPerPoint} step={unit === 'pt' || unit === 'px' ? 1 : 0.1} onChange={(v) => {
+            const a = angle * Math.PI / 180
+            const points = v / unitPerPoint
+            patch({ dx: Math.cos(a) * points, dy: Math.sin(a) * points })
+          }} format={(v) => `${v.toFixed(unit === 'pt' || unit === 'px' ? 0 : 2)} ${unit}`} />
+          <Slider label="Direction" value={angle} min={-180} max={180} step={1} onChange={(v) => {
+            const a = v * Math.PI / 180
+            patch({ dx: Math.cos(a) * depth, dy: Math.sin(a) * depth })
+          }} format={(v) => `${v.toFixed(0)}°`} />
+          <label className="row between"><span className="lbl">Colour</span>
+            <input aria-label="Extrusion colour" type="color" value={hex(value.color)} onChange={(e) => patch({ color: parseColor(e.target.value) })} />
+          </label>
+          <Slider label="Opacity" value={value.color.a} min={0} max={1} step={0.01} onChange={(v) => patch({ color: { ...value.color, a: v } })} format={(v) => `${Math.round(v * 100)}%`} />
+          <Slider label="Bands" value={value.steps} min={1} max={32} step={1} onChange={(v) => patch({ steps: Math.round(v) })} format={(v) => `${v} steps`} />
+          <Check label="Draw band lines" checked={value.showLines} onChange={(v) => patch({ showLines: v })} />
+          <Check label="Shade toward the back" checked={value.fade} onChange={(v) => patch({ fade: v })} />
+          <Row wrap><Button small onClick={() => patch(DEFAULT_EXTRUDE)}>Reset</Button><Button small variant="danger" onClick={remove}>Remove extrusion</Button></Row>
+        </>
+      )}
+    </Docker>
+  )
+}
+
+/* ================================================================= lens === */
+
+const LENS_MODES: { value: LensMode; label: string }[] = [
+  { value: 'fisheye', label: 'Fisheye' }, { value: 'brighten', label: 'Brighten' }, { value: 'tint', label: 'Tint' },
+  { value: 'grayscale', label: 'Grayscale' }, { value: 'invert', label: 'Invert' }, { value: 'transparency', label: 'Transparency' },
+  { value: 'wireframe', label: 'Wireframe' }, { value: 'heatmap', label: 'Heat map' },
+]
+
+export function LensDocker() {
+  const selection = useStore((s) => s.selection)
+  const doc = useStore((s) => s.doc)
+  const commit = useStore((s) => s.commit)
+  const vectors = useMemo(() => selection.map((id) => findObjectById(doc, id)).filter((o): o is VectorObject => o?.kind === 'vector'), [doc, selection])
+  const first = vectors[0]
+  const lens = first?.effects.find((e): e is Effect => e.type === 'effect' && e.kind === 'lens')
+
+  const ensureLens = () => {
+    if (!vectors.length) return
+    commit('Add Lens', (d) => updateObjects(d, vectors.map((v) => v.id), (o) => {
+      if (o.kind !== 'vector' || o.effects.some((e) => e.type === 'effect' && e.kind === 'lens')) return o
+      return { ...o, effects: [...o.effects, makeEffect('lens', uid('lens'))] }
+    }))
+  }
+  const patchLens = (patch: Effect['params']) => {
+    if (!vectors.length) return
+    commit('Lens settings', (d) => updateObjects(d, vectors.map((v) => v.id), (o) => {
+      if (o.kind !== 'vector') return o
+      const current = o.effects.find((e): e is Effect => e.type === 'effect' && e.kind === 'lens')
+      if (!current) return o
+      return { ...o, effects: o.effects.map((e) => e.type === 'effect' && e.id === current.id ? { ...e, params: { ...e.params, ...patch } } : e) }
+    }))
+  }
+  const removeLens = () => {
+    if (!vectors.length) return
+    commit('Remove Lens', (d) => updateObjects(d, vectors.map((v) => v.id), (o) => o.kind === 'vector'
+      ? { ...o, effects: o.effects.filter((e) => !(e.type === 'effect' && e.kind === 'lens')) }
+      : o))
+  }
+
+  return (
+    <Docker id="lens" title="Lens">
+      {!vectors.length ? <EmptyState text="Select a vector object to add a live lens." icon="lens" /> : !lens ? (
+        <>
+          <span className="tiny">Add an editable optical, colour or alpha lens effect to the selected object.</span>
+          <Button small variant="primary" onClick={ensureLens}>Add lens</Button>
+        </>
+      ) : (
+        <>
+          {vectors.some((v) => !v.effects.some((e) => e.type === 'effect' && e.kind === 'lens')) ? <Button small onClick={ensureLens}>Add lens to remaining objects</Button> : null}
+          {vectors.length > 1 ? <span className="tiny">Controls read from the first selected vector and update every selected vector that already has a Lens.</span> : null}
+          <label className="row between"><span className="lbl">Lens type</span>
+            <Select value={String(lens.params.mode ?? 'fisheye')} width={150} onChange={(v) => patchLens({ mode: v })} options={LENS_MODES} />
+          </label>
+          <Slider label={lens.params.mode === 'brighten' ? 'Brightness' : 'Strength'} value={Number(lens.params.amount ?? 0.25)} min={-1} max={1} step={0.01} onChange={(v) => patchLens({ amount: v })} format={(v) => `${Math.round(v * 100)}%`} />
+          {lens.params.mode === 'fisheye' ? <Slider label="Zoom" value={Number(lens.params.zoom ?? 1)} min={0.4} max={2.5} step={0.01} onChange={(v) => patchLens({ zoom: v })} format={(v) => `${v.toFixed(2)}×`} /> : null}
+          {lens.params.mode === 'tint' ? <label className="row between"><span className="lbl">Tint colour</span><input type="color" value={String(lens.params.color ?? '#12a19a')} onChange={(e) => patchLens({ color: e.target.value })} /></label> : null}
+          {lens.params.mode === 'fisheye' ? <label className="row between"><span className="lbl">Edges</span><Select value={String(lens.params.edge ?? 'clamp')} width={145} onChange={(v) => patchLens({ edge: v })} options={[{ value: 'clamp', label: 'Stretch edges' }, { value: 'transparent', label: 'Transparent' }]} /></label> : null}
+          <span className="tiny">Non-destructive preview. This browser clone applies the lens to the selected object's rasterized appearance.</span>
+          <Row wrap><Button small onClick={() => useStore.getState().setDocker('effects', true)}>Open effect stack</Button><Button small variant="danger" onClick={removeLens}>Remove lens</Button></Row>
+        </>
+      )}
+    </Docker>
+  )
+}
+
+function parseColor(value: string) {
+  return parseHex(value)
 }
 
 /* =============================================================== symbols === */

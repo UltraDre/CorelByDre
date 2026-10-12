@@ -14,7 +14,7 @@ export type ToolID =
   | 'transparency' | 'blend' | 'contour' | 'dropShadow' | 'envelope' | 'perspective' | 'blockShadow'
   | 'fill' | 'meshFill' | 'smartFill'
   | 'eyedropper'
-  | 'brush' | 'variableOutline' | 'symmetry'
+  | 'brush' | 'calligraphy' | 'variableOutline' | 'symmetry' | 'extrude'
   | 'maskBrush' | 'liquify' | 'clone' | 'colorReplace' | 'blurBrush' | 'sharpenBrush' | 'dodgeBrush' | 'burnBrush'
   | 'enhance' | 'perspectiveCorrect' | 'bgRemove' | 'cutout'
 
@@ -104,6 +104,7 @@ export const TOOLS: Record<ToolID, ToolDef> = {
   envelope: { id: 'envelope', label: 'Envelope', group: 'effect', hint: 'Bend objects with a control grid', cursor: 'crosshair', icon: svg('<path d="M4 18c2-8 14-8 16 0"/><path d="M4 18V6h16v12" stroke-dasharray="2 2"/>') },
   perspective: { id: 'perspective', label: 'Perspective', group: 'effect', hint: 'Draw on a perspective plane defined by vanishing points', cursor: 'crosshair', icon: svg('<path d="M3 20l9-13 9 13z"/><path d="M6 20l6-9 6 9" stroke-dasharray="2 2"/>') },
   blockShadow: { id: 'blockShadow', label: 'Block shadow', group: 'effect', hint: 'Stepped vector shadow with adjustable copies', cursor: 'crosshair', icon: svg('<rect x="3" y="3" width="11" height="11"/><path d="M7 7h11v11H7z" opacity="0.55"/>') },
+  extrude: { id: 'extrude', label: 'Extrude', group: 'effect', hint: 'Create an editable vector extrusion from the selected object', cursor: 'crosshair', icon: svg('<path d="M4 7l8-4 8 4-8 4zM4 7v10l8 4V11M20 7v10l-8 4"/><path d="M8 5l8 4" opacity="0.55"/>') },
 
   /* ---------------------------------------------------------------- fill - */
   fill: { id: 'fill', label: 'Interactive fill', group: 'fill', shortcut: 'G', hint: 'Drag on an object to set a fountain fill interactively', cursor: 'crosshair', icon: svg('<path d="M7 4h10l-1 9H8z"/><path d="M8 13c0 4 2 7 4 7s4-3 4-7"/>') },
@@ -114,6 +115,7 @@ export const TOOLS: Record<ToolID, ToolDef> = {
 
   /* --------------------------------------------------------------- media - */
   brush: { id: 'brush', label: 'Painterly brush', group: 'media', shortcut: 'B', hint: 'Paint with traditional media brushes', cursor: 'crosshair', draws: true, icon: svg('<path d="M6 20c0-3 3-4 5-6l8-9 3 3-9 8c-2 2-3 5-6 5z"/><path d="M4 21h4"/>') },
+  calligraphy: { id: 'calligraphy', label: 'Calligraphy', group: 'media', hint: 'Draw broad-nib strokes with angle- and pressure-sensitive outlines', cursor: 'crosshair', draws: true, icon: svg('<path d="M5 19L17 5l3 3L8 21z"/><path d="M13 9l3 3M4 22h7"/>') },
   variableOutline: { id: 'variableOutline', label: 'Variable outline', group: 'media', hint: 'Drag a stroke to change its width profile', cursor: 'crosshair', icon: svg('<path d="M3 17c6 0 12-8 18-8"/><path d="M3 13c6 0 12-8 18-8" opacity="0.6"/>') },
   symmetry: { id: 'symmetry', label: 'Symmetry', group: 'media', hint: 'Mirror your drawing across symmetry axes', cursor: 'crosshair', draws: true, icon: svg('<path d="M12 3v18" stroke-dasharray="3 3"/><path d="M9 8L4 12l5 4zM15 8l5 4-5 4z"/>') },
 
@@ -141,9 +143,9 @@ export const TOOL_GROUPS: ToolGroupDef[] = [
   { id: 'ellipse', label: 'Ellipse tools', tools: ['ellipse', 'ellipse3'] },
   { id: 'object', label: 'Object tools', tools: ['polygon', 'star', 'complexStar', 'graphPaper', 'spiral'] },
   { id: 'text', label: 'Text tools', tools: ['text', 'table'] },
-  { id: 'effect', label: 'Interactive effects', tools: ['transparency', 'blend', 'contour', 'dropShadow', 'envelope', 'perspective', 'blockShadow'] },
+  { id: 'effect', label: 'Interactive effects', tools: ['transparency', 'blend', 'contour', 'dropShadow', 'envelope', 'perspective', 'blockShadow', 'extrude'] },
   { id: 'fill', label: 'Fill tools', tools: ['fill', 'meshFill', 'smartFill', 'eyedropper'] },
-  { id: 'media', label: 'Media & symmetry', tools: ['brush', 'variableOutline', 'symmetry'] },
+  { id: 'media', label: 'Media & symmetry', tools: ['brush', 'calligraphy', 'variableOutline', 'symmetry'] },
   { id: 'photoSelect', label: 'Selection & masking', tools: ['maskBrush', 'cutout', 'bgRemove'] },
   { id: 'photoRetouch', label: 'Retouch', tools: ['liquify', 'clone', 'colorReplace', 'blurBrush', 'sharpenBrush', 'dodgeBrush', 'burnBrush', 'enhance'] },
   { id: 'photo', label: 'Photo corrections', tools: ['perspectiveCorrect'] },

@@ -22,7 +22,7 @@ import {
   distToPolyline, rectIntersects, rectUnion, type Vec, vDist,
 } from '../lib/util'
 import { paintStroke, presetByID } from './brush'
-import { applyEnvelope, sampleEnvelope, symmetryTransforms } from './shapes'
+import { applyEnvelope, extrusionFaces, sampleEnvelope, symmetryTransforms } from './shapes'
 import { layoutText, layoutTextOnPath, fonts, type TextLayoutResult } from '../lib/text'
 import { runStack, stackSignature } from './effects'
 import { getPatternTile, patternTransform } from '../lib/patterns'
@@ -86,8 +86,26 @@ export function objectBounds(obj: SceneObject, doc?: Document): { x: number; y: 
     case 'vector': {
       const b = pathBounds(pathForObject(obj), obj.transform)
       if (!b) return null
-      const pad = obj.stroke ? obj.stroke.width / 2 + (obj.blockShadow?.enabled ? Math.hypot(obj.blockShadow.dx, obj.blockShadow.dy) : 0) : 0
-      return pad ? { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 } : b
+      const sx = Math.hypot(obj.transform.a, obj.transform.b)
+      const sy = Math.hypot(obj.transform.c, obj.transform.d)
+      const markerPad = obj.stroke && (obj.stroke.startArrow && obj.stroke.startArrow !== 'none' || obj.stroke.endArrow && obj.stroke.endArrow !== 'none')
+        ? Math.max(obj.stroke.width * 3.8, 6) * (obj.stroke.arrowScale ?? 1) * Math.max(sx, sy)
+        : 0
+      const strokePad = obj.stroke
+        ? Math.max(obj.stroke.width * (obj.stroke.scaleWithObject === false ? 1 : Math.max(sx, sy)) / 2, markerPad)
+        : markerPad
+      const shadowPad = obj.blockShadow?.enabled ? Math.hypot(obj.blockShadow.dx, obj.blockShadow.dy) : 0
+      const pad = strokePad + shadowPad
+      const stroked = pad ? { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 } : b
+      if (!obj.extrude) return stroked
+      const ex = obj.extrude.dx * obj.transform.a + obj.extrude.dy * obj.transform.c
+      const ey = obj.extrude.dx * obj.transform.b + obj.extrude.dy * obj.transform.d
+      return {
+        x: Math.min(stroked.x, stroked.x + ex),
+        y: Math.min(stroked.y, stroked.y + ey),
+        w: stroked.w + Math.abs(ex),
+        h: stroked.h + Math.abs(ey),
+      }
     }
     case 'text': {
       if (obj.mode === 'paragraph') {
@@ -812,11 +830,12 @@ function drawVector(ctx: CanvasRenderingContext2D, obj: VectorObject, rc: Render
       paintFill(ctx, obj.fill, bounds)
       ctx.fill(path2d, obj.path.fillRule)
     }
-    if (obj.stroke && obj.stroke.width > 0 && !obj.stroke.behind) drawStroke(ctx, obj.stroke, path2d)
+    if (obj.stroke && obj.stroke.width > 0 && !obj.stroke.behind) drawStroke(ctx, obj.stroke, path2d, obj.path, obj.transform)
   }
 
   const withFill = () => {
-    if (obj.stroke && obj.stroke.behind && obj.stroke.width > 0) drawStroke(ctx, obj.stroke, path2d)
+    if (obj.extrude && !rc.wireframe) drawExtrude(ctx, obj)
+    if (obj.stroke && obj.stroke.behind && obj.stroke.width > 0) drawStroke(ctx, obj.stroke, path2d, obj.path, obj.transform)
     paint()
   }
 
@@ -841,14 +860,17 @@ function samplePathPoints(path: PathData): { x: number; y: number; p: number }[]
   return out
 }
 
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, path: Path2D): void {
+function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, path: Path2D, geometry?: PathData, transform?: Matrix): void {
   ctx.save()
   ctx.strokeStyle = strokeToCss(stroke)
-  ctx.lineWidth = Math.max(0.01, stroke.width)
+  const objectScale = Math.max(0.05, Math.sqrt(Math.abs((transform?.a ?? 1) * (transform?.d ?? 1) - (transform?.b ?? 0) * (transform?.c ?? 0))))
+  const scaleFactor = stroke.scaleWithObject === false ? 1 / objectScale : 1
+  const baseWidth = Math.max(0.01, stroke.width * scaleFactor)
+  ctx.lineWidth = baseWidth
   ctx.lineCap = stroke.cap
   ctx.lineJoin = stroke.join
   ctx.miterLimit = stroke.miterLimit
-  if (stroke.dash?.length) ctx.setLineDash(stroke.dash)
+  if (stroke.dash?.length) ctx.setLineDash(stroke.dash.map((n) => n * scaleFactor))
   if (stroke.profile?.length) {
     // Variable outline: draw a stack of progressively shorter strokes.
     const segments = 24
@@ -856,7 +878,7 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, path: Path2D)
     for (let i = 0; i < segments; i++) {
       const t0 = i / segments
       const t1 = (i + 1) / segments
-      const w = stroke.width * (stroke.profile[Math.min(stroke.profile.length - 1, Math.round(t0 * (stroke.profile.length - 1)))] ?? 1)
+      const w = baseWidth * (stroke.profile[Math.min(stroke.profile.length - 1, Math.round(t0 * (stroke.profile.length - 1)))] ?? 1)
       ctx.lineWidth = Math.max(0.01, w)
       ctx.setLineDash([t1 * 1000 - t0 * 1000, 100000])
       ctx.lineDashOffset = -t0 * 1000
@@ -866,7 +888,113 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, path: Path2D)
   } else {
     ctx.stroke(path)
   }
+  if (geometry) {
+    const markerScale = Math.max(0.2, stroke.arrowScale ?? 1)
+    for (const sub of geometry.subpaths) {
+      if (sub.closed || sub.nodes.length < 2) continue
+      const first = sub.nodes[0]
+      const second = sub.nodes[1]
+      const last = sub.nodes[sub.nodes.length - 1]
+      const prev = sub.nodes[sub.nodes.length - 2]
+      const firstTangent = Math.hypot(first.outX - first.x, first.outY - first.y) > 1e-6
+        ? { x: first.x - first.outX, y: first.y - first.outY }
+        : { x: first.x - second.x, y: first.y - second.y }
+      const lastTangent = Math.hypot(last.inX - last.x, last.inY - last.y) > 1e-6
+        ? { x: last.x - last.inX, y: last.y - last.inY }
+        : { x: last.x - prev.x, y: last.y - prev.y }
+      if (stroke.startArrow && stroke.startArrow !== 'none') drawArrowhead(ctx, stroke.startArrow, first, firstTangent, baseWidth, markerScale)
+      if (stroke.endArrow && stroke.endArrow !== 'none') drawArrowhead(ctx, stroke.endArrow, last, lastTangent, baseWidth, markerScale)
+    }
+  }
   ctx.restore()
+}
+
+function drawArrowhead(
+  ctx: CanvasRenderingContext2D,
+  style: NonNullable<Stroke['startArrow']>,
+  tip: Vec,
+  tangent: Vec,
+  lineWidth: number,
+  scale: number,
+): void {
+  const length = Math.max(lineWidth * 3.8, 6) * scale
+  const direction = Math.atan2(tangent.y, tangent.x)
+  const ux = Math.cos(direction)
+  const uy = Math.sin(direction)
+  const nx = -uy
+  const ny = ux
+  const base = { x: tip.x - ux * length, y: tip.y - uy * length }
+  const half = length * 0.38
+  ctx.save()
+  // Inherit the active outline colour and opacity.
+  const color = ctx.strokeStyle
+  ctx.fillStyle = color
+  ctx.strokeStyle = color
+  ctx.lineWidth = Math.max(0.5, lineWidth * 0.75)
+  ctx.beginPath()
+  if (style === 'triangle') {
+    ctx.moveTo(tip.x, tip.y)
+    ctx.lineTo(base.x + nx * half, base.y + ny * half)
+    ctx.lineTo(base.x - nx * half, base.y - ny * half)
+    ctx.closePath(); ctx.fill()
+  } else if (style === 'stealth') {
+    const waist = { x: tip.x - ux * length * 0.52, y: tip.y - uy * length * 0.52 }
+    ctx.moveTo(tip.x, tip.y)
+    ctx.lineTo(base.x + nx * half, base.y + ny * half)
+    ctx.lineTo(waist.x, waist.y)
+    ctx.lineTo(base.x - nx * half, base.y - ny * half)
+    ctx.closePath(); ctx.fill()
+  } else if (style === 'diamond') {
+    const mid = { x: tip.x - ux * length * 0.5, y: tip.y - uy * length * 0.5 }
+    ctx.moveTo(tip.x, tip.y)
+    ctx.lineTo(mid.x + nx * half, mid.y + ny * half)
+    ctx.lineTo(base.x, base.y)
+    ctx.lineTo(mid.x - nx * half, mid.y - ny * half)
+    ctx.closePath(); ctx.fill()
+  } else if (style === 'circle') {
+    const center = { x: tip.x - ux * length * 0.42, y: tip.y - uy * length * 0.42 }
+    ctx.arc(center.x, center.y, Math.max(lineWidth, length * 0.35), 0, Math.PI * 2)
+    ctx.fill()
+  } else if (style === 'bar') {
+    ctx.moveTo(tip.x + nx * half, tip.y + ny * half)
+    ctx.lineTo(tip.x - nx * half, tip.y - ny * half)
+    ctx.stroke()
+  } else {
+    ctx.moveTo(tip.x, tip.y)
+    ctx.lineTo(base.x + nx * half, base.y + ny * half)
+    ctx.moveTo(tip.x, tip.y)
+    ctx.lineTo(base.x - nx * half, base.y - ny * half)
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function drawExtrude(ctx: CanvasRenderingContext2D, obj: VectorObject): void {
+  const extrusion = obj.extrude
+  if (!extrusion || (Math.abs(extrusion.dx) + Math.abs(extrusion.dy) < 1e-6)) return
+  const steps = clamp(Math.round(extrusion.steps), 1, 48)
+  const faces = extrusionFaces(pathForObject(obj), extrusion.dx, extrusion.dy, 8, steps)
+  for (let i = 0; i < faces.length; i++) {
+    const band = i % steps
+    const shade = extrusion.fade ? 0.18 + (band / Math.max(1, steps - 1)) * 0.42 : 0
+    const color = shade ? mixColor(extrusion.color, { r: 0, g: 0, b: 0, a: extrusion.color.a }, shade) : extrusion.color
+    ctx.fillStyle = css(color)
+    ctx.fill(pathToPath2D(faces[i]))
+  }
+  if (extrusion.showLines && steps > 1) {
+    ctx.save()
+    ctx.strokeStyle = css(mixColor(extrusion.color, { r: 0, g: 0, b: 0, a: extrusion.color.a }, 0.35))
+    ctx.lineWidth = Math.max(0.45, obj.stroke?.width ?? 0.8)
+    ctx.globalAlpha *= 0.58
+    const path = pathToPath2D(pathForObject(obj))
+    for (let step = 1; step < steps; step++) {
+      ctx.save()
+      ctx.translate(extrusion.dx * step / steps, extrusion.dy * step / steps)
+      ctx.stroke(path)
+      ctx.restore()
+    }
+    ctx.restore()
+  }
 }
 
 function drawText(ctx: CanvasRenderingContext2D, obj: TextObject, rc: RenderContext): void {
@@ -890,8 +1018,9 @@ function drawText(ctx: CanvasRenderingContext2D, obj: TextObject, rc: RenderCont
       for (const glyph of line.glyphs) {
         if (!glyph.d || glyph.char === ' ') continue
         const angle = (glyph as { angle?: number }).angle ?? 0
+        const baseline = obj.onPathId ? glyph.y : line.baseline
         ctx.save()
-        ctx.translate(glyph.x, line.baseline)
+        ctx.translate(glyph.x, baseline)
         if (angle) ctx.rotate(angle)
         // Glyph outlines are parsed once and cached as Path2D per character+size.
         fillGlyph(ctx, obj.style.fontFamily, glyph.char, glyph.size, style.color)
@@ -912,8 +1041,9 @@ function drawText(ctx: CanvasRenderingContext2D, obj: TextObject, rc: RenderCont
       for (const glyph of line.glyphs) {
         if (glyph.char === ' ') continue
         const angle = (glyph as { angle?: number }).angle ?? 0
+        const baseline = obj.onPathId ? glyph.y : line.baseline
         ctx.save()
-        ctx.translate(glyph.x, line.baseline)
+        ctx.translate(glyph.x, baseline)
         if (angle) ctx.rotate(angle)
         ctx.fillText(glyph.char, 0, 0)
         if (style.outline && style.outline.width > 0) {
@@ -1042,8 +1172,25 @@ export function hitTestObject(obj: SceneObject, point: Vec, tolerance: number, d
         }
         if (inside) return true
       }
-      const strokeW = obj.stroke ? obj.stroke.width : obj.brush ? obj.brush.size : 2
+      const objectScale = Math.max(0.05, Math.sqrt(Math.abs(obj.transform.a * obj.transform.d - obj.transform.b * obj.transform.c)))
+      const strokeW = obj.stroke
+        ? obj.stroke.width * (obj.stroke.scaleWithObject === false ? 1 / objectScale : 1)
+        : obj.brush ? obj.brush.size : 2
       for (const loop of loops) if (distToPolyline(local, loop) <= strokeW / 2 + localTol) return true
+      if (obj.stroke) {
+        const markerLength = Math.max(strokeW * 3.8, 6) * (obj.stroke.arrowScale ?? 1)
+        for (const sub of path.subpaths) {
+          if (sub.closed || sub.nodes.length < 2) continue
+          const first = sub.nodes[0]
+          const last = sub.nodes[sub.nodes.length - 1]
+          if (obj.stroke.startArrow && obj.stroke.startArrow !== 'none' && vDist(local, first) <= markerLength + localTol) return true
+          if (obj.stroke.endArrow && obj.stroke.endArrow !== 'none' && vDist(local, last) <= markerLength + localTol) return true
+        }
+      }
+      if (obj.extrude) {
+        const faces = extrusionFaces(path, obj.extrude.dx, obj.extrude.dy, 4, 1)
+        if (faces.some((face) => flattenPath(face, 2).some((loop) => pointInPolygon(local, loop)))) return true
+      }
       return false
     }
     case 'text': {
